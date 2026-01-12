@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+  <title>Sprite Slicer</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="drag-region"></div>
+      <h1 class="app-title">Sprite Slicer</h1>
+      <p class="app-subtitle">Split sprite sheets into individual frames</p>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Left Panel: Settings -->
+      <section class="panel settings-panel">
+        <h2 class="panel-title">Settings</h2>
+
+        <!-- Image Selection -->
+        <div class="setting-group">
+          <label class="setting-label">Source Images</label>
+          <button id="selectImagesBtn" class="btn btn-primary btn-block">
+            <span class="btn-icon">+</span>
+            Select Images
+          </button>
+          <div id="imageList" class="image-list"></div>
+        </div>
+
+        <!-- Grid Settings -->
+        <div class="setting-group">
+          <label class="setting-label">Grid Configuration</label>
+          <div class="grid-inputs">
+            <div class="input-group">
+              <label for="columns">Columns</label>
+              <input type="number" id="columns" value="4" min="1" max="100">
+            </div>
+            <div class="input-group">
+              <label for="rows">Rows</label>
+              <input type="number" id="rows" value="4" min="1" max="100">
+            </div>
+          </div>
+          <div class="frame-info" id="frameInfo">
+            Total frames: <span id="totalFrames">16</span>
+          </div>
+        </div>
+
+        <!-- Output Settings -->
+        <div class="setting-group">
+          <label class="setting-label">Output Settings</label>
+          <div class="input-group">
+            <label for="baseName">Base Name (optional)</label>
+            <input type="text" id="baseName" placeholder="sprite">
+          </div>
+          <div class="checkbox-group">
+            <input type="checkbox" id="sequentialNumbering">
+            <label for="sequentialNumbering">Sequential numbering across all images</label>
+          </div>
+          <button id="selectOutputBtn" class="btn btn-secondary btn-block">
+            <span class="btn-icon">📁</span>
+            Select Output Folder
+          </button>
+          <div id="outputPath" class="output-path">No folder selected</div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="action-buttons">
+          <button id="previewBtn" class="btn btn-secondary" disabled>
+            Preview Grid
+          </button>
+          <button id="sliceBtn" class="btn btn-primary" disabled>
+            Slice Sprites
+          </button>
+        </div>
+      </section>
+
+      <!-- Right Panel: Preview -->
+      <section class="panel preview-panel">
+        <h2 class="panel-title">Preview</h2>
+        <div id="previewContainer" class="preview-container">
+          <div class="preview-placeholder">
+            <div class="placeholder-icon">🖼️</div>
+            <p>Select an image to preview</p>
+          </div>
+        </div>
+        <div id="previewInfo" class="preview-info"></div>
+      </section>
+    </main>
+
+    <!-- Progress Modal -->
+    <div id="progressModal" class="modal hidden">
+      <div class="modal-content">
+        <h3>Processing...</h3>
+        <div class="progress-bar">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+        <p id="progressText">0 / 0 frames</p>
+      </div>
+    </div>
+
+    <!-- Result Modal -->
+    <div id="resultModal" class="modal hidden">
+      <div class="modal-content result-modal-content">
+        <h3 id="resultTitle">Complete!</h3>
+        <div id="resultSummary" class="result-summary"></div>
+        <div class="modal-actions">
+          <button id="openFolderBtn" class="btn btn-secondary">Open Folder</button>
+          <button id="closeResultBtn" class="btn btn-primary">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
