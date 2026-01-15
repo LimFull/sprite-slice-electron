@@ -270,6 +270,56 @@ body {
   color: var(--accent);
 }
 
+/* Drop Zone */
+.drop-zone {
+  border: 2px dashed var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  background-color: var(--bg-primary);
+}
+
+.drop-zone:hover {
+  border-color: var(--accent);
+  background-color: rgba(233, 69, 96, 0.05);
+}
+
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  border-style: solid;
+  background-color: rgba(233, 69, 96, 0.15);
+  transform: scale(1.02);
+}
+
+.drop-zone-content {
+  pointer-events: none;
+}
+
+.drop-zone-content .btn {
+  pointer-events: auto;
+}
+
+.drop-zone-icon {
+  font-size: 32px;
+  color: var(--accent);
+  margin-bottom: 8px;
+  font-weight: 300;
+}
+
+.drop-zone-text {
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.drop-zone-subtext {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
 /* Image List */
 .image-list {
   margin-top: 12px;

@@ -7,6 +7,7 @@ const state = {
 
 // DOM Elements
 const elements = {
+  dropZone: document.getElementById('dropZone'),
   selectImagesBtn: document.getElementById('selectImagesBtn'),
   imageList: document.getElementById('imageList'),
   columns: document.getElementById('columns'),
@@ -57,12 +58,61 @@ function setupEventListeners() {
   handleNumberingModeChange(); // Initialize
 
   // Drag and drop support
+  setupDragAndDrop();
+}
+
+// Drag and drop setup
+function setupDragAndDrop() {
+  const dropZone = elements.dropZone;
+  let dragCounter = 0;
+
+  // Prevent default behavior for the entire document
   document.body.addEventListener('dragover', (e) => {
     e.preventDefault();
     e.stopPropagation();
   });
 
-  document.body.addEventListener('drop', handleDrop);
+  document.body.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  // Drop zone specific events
+  dropZone.addEventListener('dragenter', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter++;
+    dropZone.classList.add('drag-over');
+  });
+
+  dropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter--;
+    if (dragCounter === 0) {
+      dropZone.classList.remove('drag-over');
+    }
+  });
+
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter = 0;
+    dropZone.classList.remove('drag-over');
+    handleDrop(e);
+  });
+
+  // Click on drop zone (outside button) also opens file dialog
+  dropZone.addEventListener('click', (e) => {
+    if (e.target === dropZone || e.target.closest('.drop-zone-content') && !e.target.closest('.btn')) {
+      handleSelectImages();
+    }
+  });
 }
 
 // Handlers

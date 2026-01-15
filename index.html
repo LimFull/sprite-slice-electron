@@ -25,10 +25,16 @@
         <!-- Image Selection -->
         <div class="setting-group">
           <label class="setting-label">Source Images</label>
-          <button id="selectImagesBtn" class="btn btn-primary btn-block">
-            <span class="btn-icon">+</span>
-            Select Images
-          </button>
+          <div id="dropZone" class="drop-zone">
+            <div class="drop-zone-content">
+              <div class="drop-zone-icon">+</div>
+              <p class="drop-zone-text">Drag & drop images here</p>
+              <p class="drop-zone-subtext">or</p>
+              <button id="selectImagesBtn" class="btn btn-primary">
+                Select Images
+              </button>
+            </div>
+          </div>
           <div id="imageList" class="image-list"></div>
         </div>
 
