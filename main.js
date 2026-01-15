@@ -95,7 +95,7 @@ ipcMain.handle('slice-sprite', async (event, options) => {
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
-        const outputName = `${baseName}${String(frameNumber).padStart(3, '0')}.png`;
+        const outputName = `${baseName}_${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
         await sharp(imagePath)
@@ -188,7 +188,7 @@ async function sliceSingleSprite(options) {
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
-        const outputName = `${baseName}${String(frameNumber).padStart(3, '0')}.png`;
+        const outputName = `${baseName}_${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
         await sharp(imagePath)
