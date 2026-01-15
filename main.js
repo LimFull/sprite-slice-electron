@@ -81,7 +81,7 @@ ipcMain.handle('get-image-info', async (event, imagePath) => {
 
 // Slice sprite sheet
 ipcMain.handle('slice-sprite', async (event, options) => {
-  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 1 } = options;
+  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0 } = options;
 
   try {
     const image = sharp(imagePath);
@@ -95,7 +95,7 @@ ipcMain.handle('slice-sprite', async (event, options) => {
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
-        const outputName = `${baseName}-${String(frameNumber).padStart(3, '0')}.png`;
+        const outputName = `${baseName}${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
         await sharp(imagePath)
@@ -138,7 +138,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
   const { imagePaths, columns, rows, outputFolder, baseName, useSequentialNumbering } = options;
 
   const allResults = [];
-  let currentNumber = 1;
+  let currentNumber = 0;
 
   for (const imagePath of imagePaths) {
     const fileName = path.basename(imagePath, path.extname(imagePath));
@@ -150,7 +150,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
       rows,
       outputFolder,
       baseName: useSequentialNumbering ? baseName : name,
-      startNumber: useSequentialNumbering ? currentNumber : 1
+      startNumber: useSequentialNumbering ? currentNumber : 0
     });
 
     if (result.success) {
@@ -174,7 +174,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
 });
 
 async function sliceSingleSprite(options) {
-  const { imagePath, columns, rows, outputFolder, baseName, startNumber } = options;
+  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0 } = options;
 
   try {
     const image = sharp(imagePath);
@@ -188,7 +188,7 @@ async function sliceSingleSprite(options) {
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
-        const outputName = `${baseName}-${String(frameNumber).padStart(3, '0')}.png`;
+        const outputName = `${baseName}${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
         await sharp(imagePath)

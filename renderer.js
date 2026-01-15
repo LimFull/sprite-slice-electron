@@ -13,6 +13,8 @@ const elements = {
   rows: document.getElementById('rows'),
   totalFrames: document.getElementById('totalFrames'),
   baseName: document.getElementById('baseName'),
+  baseNameGroup: document.getElementById('baseNameGroup'),
+  perFileNumbering: document.getElementById('perFileNumbering'),
   sequentialNumbering: document.getElementById('sequentialNumbering'),
   selectOutputBtn: document.getElementById('selectOutputBtn'),
   outputPath: document.getElementById('outputPath'),
@@ -48,6 +50,11 @@ function setupEventListeners() {
   elements.closeResultBtn.addEventListener('click', () => {
     elements.resultModal.classList.add('hidden');
   });
+
+  // Numbering mode change
+  elements.perFileNumbering.addEventListener('change', handleNumberingModeChange);
+  elements.sequentialNumbering.addEventListener('change', handleNumberingModeChange);
+  handleNumberingModeChange(); // Initialize
 
   // Drag and drop support
   document.body.addEventListener('dragover', (e) => {
@@ -121,6 +128,17 @@ function handleGridChange() {
   elements.totalFrames.textContent = cols * rows;
 }
 
+function handleNumberingModeChange() {
+  const isSequential = elements.sequentialNumbering.checked;
+  if (isSequential) {
+    elements.baseNameGroup.classList.add('required');
+    elements.baseName.placeholder = 'sprite (required)';
+  } else {
+    elements.baseNameGroup.classList.remove('required');
+    elements.baseName.placeholder = 'sprite';
+  }
+}
+
 async function handlePreview() {
   if (state.selectedImageIndex < 0) return;
 
@@ -151,7 +169,14 @@ async function handleSlice() {
   const columns = parseInt(elements.columns.value) || 1;
   const rows = parseInt(elements.rows.value) || 1;
   const baseName = elements.baseName.value.trim();
-  const useSequentialNumbering = elements.sequentialNumbering.checked && baseName;
+  const useSequentialNumbering = elements.sequentialNumbering.checked;
+
+  // Validate: sequential mode requires baseName
+  if (useSequentialNumbering && !baseName) {
+    alert('Base Name is required for sequential numbering mode.');
+    elements.baseName.focus();
+    return;
+  }
 
   // Show progress modal
   elements.progressModal.classList.remove('hidden');
