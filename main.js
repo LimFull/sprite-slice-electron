@@ -235,34 +235,43 @@ ipcMain.handle('generate-preview', async (event, options) => {
     const frameWidth = Math.floor(metadata.width / columns);
     const frameHeight = Math.floor(metadata.height / rows);
 
-    // Create SVG overlay with grid lines
+    // Resize image first to get exact dimensions for the SVG overlay
+    const maxSize = 600;
+    const scale = Math.min(maxSize / metadata.width, maxSize / metadata.height, 1);
+    const previewWidth = Math.round(metadata.width * scale);
+    const previewHeight = Math.round(metadata.height * scale);
+
+    const resizedImage = await sharp(imagePath)
+      .resize(previewWidth, previewHeight, { fit: 'fill' })
+      .toBuffer();
+
+    // Create SVG overlay with grid lines at the preview size
     const svgLines = [];
+    const scaledFrameWidth = previewWidth / columns;
+    const scaledFrameHeight = previewHeight / rows;
 
     // Vertical lines
     for (let i = 1; i < columns; i++) {
-      const x = i * frameWidth;
-      svgLines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${metadata.height}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+      const x = Math.round(i * scaledFrameWidth);
+      svgLines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${previewHeight}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
     }
 
     // Horizontal lines
     for (let i = 1; i < rows; i++) {
-      const y = i * frameHeight;
-      svgLines.push(`<line x1="0" y1="${y}" x2="${metadata.width}" y2="${y}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+      const y = Math.round(i * scaledFrameHeight);
+      svgLines.push(`<line x1="0" y1="${y}" x2="${previewWidth}" y2="${y}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
     }
 
-    const svgOverlay = Buffer.from(`
-      <svg width="${metadata.width}" height="${metadata.height}">
-        ${svgLines.join('\n')}
-      </svg>
-    `);
+    const svgOverlay = Buffer.from(
+      `<svg width="${previewWidth}" height="${previewHeight}">${svgLines.join('')}</svg>`
+    );
 
-    const composited = await sharp(imagePath)
+    const composited = await sharp(resizedImage)
       .composite([{
         input: svgOverlay,
         top: 0,
         left: 0
       }])
-      .resize(600, 600, { fit: 'inside', withoutEnlargement: true })
       .toBuffer();
 
     return {
