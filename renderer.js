@@ -2,7 +2,18 @@
 const state = {
   images: [],
   selectedImageIndex: -1,
-  outputFolder: null
+  outputFolder: null,
+  zoom: {
+    scale: 1,
+    minScale: 0.5,
+    maxScale: 5,
+    step: 0.25,
+    panX: 0,
+    panY: 0,
+    isDragging: false,
+    startX: 0,
+    startY: 0
+  }
 };
 
 // DOM Elements
@@ -30,7 +41,12 @@ const elements = {
   resultTitle: document.getElementById('resultTitle'),
   resultSummary: document.getElementById('resultSummary'),
   openFolderBtn: document.getElementById('openFolderBtn'),
-  closeResultBtn: document.getElementById('closeResultBtn')
+  closeResultBtn: document.getElementById('closeResultBtn'),
+  zoomControls: document.getElementById('zoomControls'),
+  zoomInBtn: document.getElementById('zoomInBtn'),
+  zoomOutBtn: document.getElementById('zoomOutBtn'),
+  zoomResetBtn: document.getElementById('zoomResetBtn'),
+  zoomLevel: document.getElementById('zoomLevel')
 };
 
 // Initialize
@@ -59,6 +75,20 @@ function setupEventListeners() {
 
   // Drag and drop support
   setupDragAndDrop();
+
+  // Zoom controls
+  elements.zoomInBtn.addEventListener('click', handleZoomIn);
+  elements.zoomOutBtn.addEventListener('click', handleZoomOut);
+  elements.zoomResetBtn.addEventListener('click', handleZoomReset);
+
+  // Preview container drag/pan
+  elements.previewContainer.addEventListener('mousedown', handlePanStart);
+  elements.previewContainer.addEventListener('mousemove', handlePanMove);
+  elements.previewContainer.addEventListener('mouseup', handlePanEnd);
+  elements.previewContainer.addEventListener('mouseleave', handlePanEnd);
+
+  // Mouse wheel zoom
+  elements.previewContainer.addEventListener('wheel', handleWheelZoom);
 }
 
 // Drag and drop setup
@@ -189,6 +219,83 @@ function handleNumberingModeChange() {
   }
 }
 
+// Zoom handlers
+function handleZoomIn() {
+  const newScale = Math.min(state.zoom.scale + state.zoom.step, state.zoom.maxScale);
+  setZoom(newScale);
+}
+
+function handleZoomOut() {
+  const newScale = Math.max(state.zoom.scale - state.zoom.step, state.zoom.minScale);
+  setZoom(newScale);
+}
+
+function handleZoomReset() {
+  state.zoom.scale = 1;
+  state.zoom.panX = 0;
+  state.zoom.panY = 0;
+  updatePreviewTransform();
+  updateZoomLevel();
+}
+
+function handleWheelZoom(e) {
+  if (!elements.previewContainer.classList.contains('zoomable')) return;
+
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? -state.zoom.step : state.zoom.step;
+  const newScale = Math.max(state.zoom.minScale, Math.min(state.zoom.maxScale, state.zoom.scale + delta));
+  setZoom(newScale);
+}
+
+function setZoom(newScale) {
+  state.zoom.scale = newScale;
+
+  // Reset pan if zooming out to 1x or less
+  if (newScale <= 1) {
+    state.zoom.panX = 0;
+    state.zoom.panY = 0;
+  }
+
+  updatePreviewTransform();
+  updateZoomLevel();
+}
+
+function updateZoomLevel() {
+  elements.zoomLevel.textContent = `${Math.round(state.zoom.scale * 100)}%`;
+}
+
+function updatePreviewTransform() {
+  const wrapper = elements.previewContainer.querySelector('.preview-wrapper');
+  if (wrapper) {
+    wrapper.style.transform = `translate(${state.zoom.panX}px, ${state.zoom.panY}px) scale(${state.zoom.scale})`;
+  }
+}
+
+// Pan handlers
+function handlePanStart(e) {
+  if (!elements.previewContainer.classList.contains('zoomable')) return;
+  if (state.zoom.scale <= 1) return;
+
+  state.zoom.isDragging = true;
+  state.zoom.startX = e.clientX - state.zoom.panX;
+  state.zoom.startY = e.clientY - state.zoom.panY;
+  elements.previewContainer.classList.add('dragging');
+}
+
+function handlePanMove(e) {
+  if (!state.zoom.isDragging) return;
+
+  e.preventDefault();
+  state.zoom.panX = e.clientX - state.zoom.startX;
+  state.zoom.panY = e.clientY - state.zoom.startY;
+  updatePreviewTransform();
+}
+
+function handlePanEnd() {
+  state.zoom.isDragging = false;
+  elements.previewContainer.classList.remove('dragging');
+}
+
 async function handlePreview() {
   if (state.selectedImageIndex < 0) return;
 
@@ -203,7 +310,20 @@ async function handlePreview() {
       rows
     });
 
-    elements.previewContainer.innerHTML = `<img src="${result.preview}" alt="Preview">`;
+    // Reset zoom state
+    state.zoom.scale = 1;
+    state.zoom.panX = 0;
+    state.zoom.panY = 0;
+
+    elements.previewContainer.innerHTML = `
+      <div class="preview-wrapper">
+        <img src="${result.preview}" alt="Preview">
+      </div>
+    `;
+    elements.previewContainer.classList.add('zoomable');
+    elements.zoomControls.classList.remove('hidden');
+    updateZoomLevel();
+
     elements.previewInfo.innerHTML = `
       Frame size: <span>${result.frameWidth} x ${result.frameHeight}</span> pixels |
       Total frames: <span>${result.totalFrames}</span>
@@ -350,6 +470,8 @@ function updateUI() {
 
 function showImagePreview(image) {
   elements.previewContainer.innerHTML = `<img src="${image.preview}" alt="${image.name}">`;
+  elements.previewContainer.classList.remove('zoomable');
+  elements.zoomControls.classList.add('hidden');
   elements.previewInfo.innerHTML = `
     <strong>${image.name}</strong><br>
     Size: <span>${image.width} x ${image.height}</span> pixels |
@@ -364,6 +486,8 @@ function resetPreview() {
       <p>Select an image to preview</p>
     </div>
   `;
+  elements.previewContainer.classList.remove('zoomable');
+  elements.zoomControls.classList.add('hidden');
   elements.previewInfo.innerHTML = '';
 }
 
