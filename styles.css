@@ -751,6 +751,35 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+/* View Toggle Button */
+.view-toggle-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.view-toggle-btn:hover {
+  background-color: #1a4a7a;
+  border-color: var(--accent);
+}
+
+.view-icon {
+  line-height: 1;
+}
+
+.view-icon.hidden {
+  display: none;
+}
+
 .palette-toolbar {
   padding: 12px 0;
   border-bottom: 1px solid var(--border-color);
@@ -777,10 +806,82 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  grid-auto-rows: min-content;
   gap: 6px;
   padding: 12px 0;
   overflow-y: auto;
   align-content: start;
+}
+
+/* Grid view specific styles */
+.tile-palette:not(.list-view) .palette-tile {
+  width: 100%;
+  height: 0;
+  padding-bottom: 100%;
+  position: relative;
+}
+
+.tile-palette:not(.list-view) .palette-tile img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.tile-palette:not(.list-view) .palette-tile .tile-index {
+  position: absolute;
+}
+
+/* List view mode */
+.tile-palette.list-view {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.tile-palette.list-view .palette-tile {
+  aspect-ratio: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  flex-direction: row;
+  height: 100px;
+}
+
+.tile-palette.list-view .palette-tile .tile-img-wrapper {
+  height: 100%;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-tertiary);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.tile-palette.list-view .palette-tile img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.tile-palette.list-view .palette-tile .tile-index {
+  position: static;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 0;
+  min-width: 24px;
+}
+
+.tile-palette.list-view .palette-tile .tile-name {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .palette-tile {
@@ -902,6 +1003,17 @@ body {
   transform: translateY(-1px);
 }
 
+.tilemap-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pan-btn.active {
+  background: linear-gradient(135deg, var(--accent) 0%, #c73e54 100%);
+  border-color: var(--accent);
+}
+
 .tilemap-canvas-container {
   flex: 1;
   display: flex;
@@ -909,9 +1021,23 @@ body {
   justify-content: center;
   background-color: var(--bg-secondary);
   border-radius: 12px;
-  overflow: auto;
+  overflow: hidden;
   position: relative;
   min-height: 400px;
+  cursor: crosshair;
+}
+
+.tilemap-canvas-container.pan-mode {
+  cursor: grab;
+}
+
+.tilemap-canvas-container.pan-mode:active {
+  cursor: grabbing;
+}
+
+.tilemap-canvas-wrapper {
+  transform-origin: center center;
+  transition: transform 0.1s ease-out;
 }
 
 #tilemapCanvas {

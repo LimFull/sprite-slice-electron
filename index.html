@@ -142,13 +142,22 @@
               <span>tiles</span>
               <button id="resizeCanvasBtn" class="btn btn-secondary btn-sm">Apply</button>
             </div>
+            <div class="tilemap-zoom-controls">
+              <button id="tilemapPanBtn" class="zoom-btn pan-btn" title="Pan Tool (Hold to drag canvas)">✋</button>
+              <button id="tilemapZoomOutBtn" class="zoom-btn" title="Zoom Out">-</button>
+              <span id="tilemapZoomLevel" class="zoom-level">100%</span>
+              <button id="tilemapZoomInBtn" class="zoom-btn" title="Zoom In">+</button>
+              <button id="tilemapZoomResetBtn" class="zoom-btn zoom-reset" title="Reset Zoom">Reset</button>
+            </div>
             <div class="tilemap-actions">
               <button id="clearCanvasBtn" class="btn btn-secondary btn-sm">Clear</button>
               <button id="exportTilemapBtn" class="btn btn-primary btn-sm">Export PNG</button>
             </div>
           </div>
           <div id="tilemapCanvasContainer" class="tilemap-canvas-container">
-            <canvas id="tilemapCanvas"></canvas>
+            <div id="tilemapCanvasWrapper" class="tilemap-canvas-wrapper">
+              <canvas id="tilemapCanvas"></canvas>
+            </div>
           </div>
           <div id="tilemapInfo" class="preview-info"></div>
         </div>
@@ -158,6 +167,10 @@
       <section class="panel palette-panel hidden" id="palettePanel">
         <div class="panel-header">
           <h2 class="panel-title">Tile Palette</h2>
+          <button id="paletteViewToggle" class="view-toggle-btn" title="Toggle View">
+            <span class="view-icon grid-icon">▦</span>
+            <span class="view-icon list-icon hidden">▤</span>
+          </button>
         </div>
         <div class="palette-toolbar">
           <button id="loadTilesBtn" class="btn btn-secondary btn-sm btn-block">Load Tiles from Folder</button>

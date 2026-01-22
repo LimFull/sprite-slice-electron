@@ -17,6 +17,7 @@ const state = {
   // Tilemap feature
   mode: 'slice', // 'slice' | 'tilemap'
   slicedTiles: [], // { id, name, dataUrl, width, height, index }
+  paletteViewMode: 'grid', // 'grid' | 'list'
   tilemap: {
     canvasWidth: 16,
     canvasHeight: 16,
@@ -24,7 +25,19 @@ const state = {
     tileHeight: 32,
     grid: [], // 2D array: grid[y][x] = tileId | null
     selectedTileId: null,
-    isErasing: false
+    isErasing: false,
+    zoom: {
+      scale: 1,
+      minScale: 0.25,
+      maxScale: 4,
+      step: 0.25,
+      panX: 0,
+      panY: 0,
+      isDragging: false,
+      startX: 0,
+      startY: 0
+    },
+    isPanMode: false
   }
 };
 
@@ -74,14 +87,23 @@ const elements = {
   tileSizeInfo: document.getElementById('tileSizeInfo'),
   loadTilesBtn: document.getElementById('loadTilesBtn'),
   eraserBtn: document.getElementById('eraserBtn'),
+  paletteViewToggle: document.getElementById('paletteViewToggle'),
   // Tilemap canvas
   tilemapCanvas: document.getElementById('tilemapCanvas'),
+  tilemapCanvasContainer: document.getElementById('tilemapCanvasContainer'),
+  tilemapCanvasWrapper: document.getElementById('tilemapCanvasWrapper'),
   canvasColumns: document.getElementById('canvasColumns'),
   canvasRows: document.getElementById('canvasRows'),
   resizeCanvasBtn: document.getElementById('resizeCanvasBtn'),
   clearCanvasBtn: document.getElementById('clearCanvasBtn'),
   exportTilemapBtn: document.getElementById('exportTilemapBtn'),
-  tilemapInfo: document.getElementById('tilemapInfo')
+  tilemapInfo: document.getElementById('tilemapInfo'),
+  // Tilemap zoom
+  tilemapZoomInBtn: document.getElementById('tilemapZoomInBtn'),
+  tilemapZoomOutBtn: document.getElementById('tilemapZoomOutBtn'),
+  tilemapZoomResetBtn: document.getElementById('tilemapZoomResetBtn'),
+  tilemapZoomLevel: document.getElementById('tilemapZoomLevel'),
+  tilemapPanBtn: document.getElementById('tilemapPanBtn')
 };
 
 // Initialize
@@ -133,12 +155,22 @@ function setupEventListeners() {
   elements.sliceToPaletteBtn.addEventListener('click', handleSliceToPalette);
   elements.loadTilesBtn.addEventListener('click', handleLoadTilesFromFolder);
   elements.eraserBtn.addEventListener('click', handleEraserToggle);
+  elements.paletteViewToggle.addEventListener('click', handlePaletteViewToggle);
   elements.resizeCanvasBtn.addEventListener('click', handleResizeCanvas);
   elements.clearCanvasBtn.addEventListener('click', handleClearCanvas);
   elements.exportTilemapBtn.addEventListener('click', handleExportTilemap);
 
+  // Tilemap zoom controls
+  elements.tilemapZoomInBtn.addEventListener('click', handleTilemapZoomIn);
+  elements.tilemapZoomOutBtn.addEventListener('click', handleTilemapZoomOut);
+  elements.tilemapZoomResetBtn.addEventListener('click', handleTilemapZoomReset);
+  elements.tilemapPanBtn.addEventListener('click', handleTilemapPanToggle);
+
   // Tilemap canvas events
   setupTilemapCanvasEvents();
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', handleKeyDown);
 }
 
 // Drag and drop setup
@@ -655,17 +687,52 @@ async function handleLoadTilesFromFolder() {
   }
 }
 
+// Palette View Toggle
+function handlePaletteViewToggle() {
+  state.paletteViewMode = state.paletteViewMode === 'grid' ? 'list' : 'grid';
+
+  // Update toggle button icons
+  const gridIcon = elements.paletteViewToggle.querySelector('.grid-icon');
+  const listIcon = elements.paletteViewToggle.querySelector('.list-icon');
+  gridIcon.classList.toggle('hidden', state.paletteViewMode === 'list');
+  listIcon.classList.toggle('hidden', state.paletteViewMode === 'grid');
+
+  renderTilePalette();
+}
+
 // Render Tile Palette
 function renderTilePalette() {
-  elements.tilePalette.innerHTML = state.slicedTiles.map((tile, index) => `
-    <div class="palette-tile ${tile.id === state.tilemap.selectedTileId ? 'selected' : ''}"
-         data-tile-id="${tile.id}"
-         draggable="true"
-         title="${tile.name}">
-      <img src="${tile.dataUrl}" alt="${tile.name}">
-      <span class="tile-index">${index}</span>
-    </div>
-  `).join('');
+  const isListView = state.paletteViewMode === 'list';
+
+  // Update palette class
+  elements.tilePalette.classList.toggle('list-view', isListView);
+
+  elements.tilePalette.innerHTML = state.slicedTiles.map((tile, index) => {
+    if (isListView) {
+      return `
+        <div class="palette-tile ${tile.id === state.tilemap.selectedTileId ? 'selected' : ''}"
+             data-tile-id="${tile.id}"
+             draggable="true"
+             title="${tile.name}">
+          <div class="tile-img-wrapper">
+            <img src="${tile.dataUrl}" alt="${tile.name}">
+          </div>
+          <span class="tile-index">${index}</span>
+          <span class="tile-name">${tile.name}</span>
+        </div>
+      `;
+    } else {
+      return `
+        <div class="palette-tile ${tile.id === state.tilemap.selectedTileId ? 'selected' : ''}"
+             data-tile-id="${tile.id}"
+             draggable="true"
+             title="${tile.name}">
+          <img src="${tile.dataUrl}" alt="${tile.name}">
+          <span class="tile-index">${index}</span>
+        </div>
+      `;
+    }
+  }).join('');
 
   elements.paletteCount.textContent = state.slicedTiles.length;
 
@@ -816,25 +883,50 @@ function renderTilemapCanvas() {
 // Setup Canvas Events
 function setupTilemapCanvasEvents() {
   const canvas = elements.tilemapCanvas;
+  const container = elements.tilemapCanvasContainer;
   let isDrawing = false;
 
   canvas.addEventListener('mousedown', (e) => {
     if (state.mode !== 'tilemap') return;
-    isDrawing = true;
-    handleCanvasClick(e);
+    // If pan mode is on, start panning instead of drawing
+    if (state.tilemap.isPanMode) {
+      e.preventDefault();
+      state.tilemap.zoom.isDragging = true;
+      state.tilemap.zoom.startX = e.clientX - state.tilemap.zoom.panX;
+      state.tilemap.zoom.startY = e.clientY - state.tilemap.zoom.panY;
+      return;
+    }
+    // Only draw with left click when not panning
+    if (e.button === 0 && !e.shiftKey) {
+      isDrawing = true;
+      handleCanvasClick(e);
+    }
   });
 
   canvas.addEventListener('mousemove', (e) => {
-    if (state.mode !== 'tilemap' || !isDrawing) return;
-    handleCanvasClick(e);
+    if (state.mode !== 'tilemap') return;
+    // Handle panning
+    if (state.tilemap.zoom.isDragging) {
+      e.preventDefault();
+      state.tilemap.zoom.panX = e.clientX - state.tilemap.zoom.startX;
+      state.tilemap.zoom.panY = e.clientY - state.tilemap.zoom.startY;
+      updateTilemapTransform();
+      return;
+    }
+    // Handle drawing
+    if (isDrawing) {
+      handleCanvasClick(e);
+    }
   });
 
   canvas.addEventListener('mouseup', () => {
     isDrawing = false;
+    state.tilemap.zoom.isDragging = false;
   });
 
   canvas.addEventListener('mouseleave', () => {
     isDrawing = false;
+    state.tilemap.zoom.isDragging = false;
   });
 
   // Drag and drop support
@@ -853,6 +945,45 @@ function setupTilemapCanvasEvents() {
       renderTilePalette();
       handleCanvasClick(e);
     }
+  });
+
+  // Pan with middle mouse or shift+left mouse (always available)
+  container.addEventListener('mousedown', (e) => {
+    if (state.mode !== 'tilemap') return;
+    if (e.button === 1 || (e.button === 0 && e.shiftKey && !state.tilemap.isPanMode)) {
+      e.preventDefault();
+      state.tilemap.zoom.isDragging = true;
+      state.tilemap.zoom.startX = e.clientX - state.tilemap.zoom.panX;
+      state.tilemap.zoom.startY = e.clientY - state.tilemap.zoom.panY;
+    }
+  });
+
+  container.addEventListener('mousemove', (e) => {
+    if (!state.tilemap.zoom.isDragging) return;
+    e.preventDefault();
+    state.tilemap.zoom.panX = e.clientX - state.tilemap.zoom.startX;
+    state.tilemap.zoom.panY = e.clientY - state.tilemap.zoom.startY;
+    updateTilemapTransform();
+  });
+
+  container.addEventListener('mouseup', () => {
+    state.tilemap.zoom.isDragging = false;
+  });
+
+  container.addEventListener('mouseleave', () => {
+    state.tilemap.zoom.isDragging = false;
+  });
+
+  // Wheel zoom
+  container.addEventListener('wheel', (e) => {
+    if (state.mode !== 'tilemap') return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -state.tilemap.zoom.step : state.tilemap.zoom.step;
+    const newScale = Math.max(
+      state.tilemap.zoom.minScale,
+      Math.min(state.tilemap.zoom.maxScale, state.tilemap.zoom.scale + delta)
+    );
+    setTilemapZoom(newScale);
   });
 }
 
@@ -918,6 +1049,70 @@ function updateTilemapInfo() {
   // Update input values
   elements.canvasColumns.value = canvasWidth;
   elements.canvasRows.value = canvasHeight;
+}
+
+// =============================================
+// Tilemap Zoom Functions
+// =============================================
+
+function handleTilemapZoomIn() {
+  const zoom = state.tilemap.zoom;
+  const newScale = Math.min(zoom.scale + zoom.step, zoom.maxScale);
+  setTilemapZoom(newScale);
+}
+
+function handleTilemapZoomOut() {
+  const zoom = state.tilemap.zoom;
+  const newScale = Math.max(zoom.scale - zoom.step, zoom.minScale);
+  setTilemapZoom(newScale);
+}
+
+function handleTilemapZoomReset() {
+  state.tilemap.zoom.scale = 1;
+  state.tilemap.zoom.panX = 0;
+  state.tilemap.zoom.panY = 0;
+  updateTilemapTransform();
+  updateTilemapZoomLevel();
+}
+
+function setTilemapZoom(newScale) {
+  state.tilemap.zoom.scale = newScale;
+
+  // Reset pan if zooming out to 1x or less
+  if (newScale <= 1) {
+    state.tilemap.zoom.panX = 0;
+    state.tilemap.zoom.panY = 0;
+  }
+
+  updateTilemapTransform();
+  updateTilemapZoomLevel();
+}
+
+function updateTilemapTransform() {
+  const { scale, panX, panY } = state.tilemap.zoom;
+  elements.tilemapCanvasWrapper.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+}
+
+function updateTilemapZoomLevel() {
+  elements.tilemapZoomLevel.textContent = `${Math.round(state.tilemap.zoom.scale * 100)}%`;
+}
+
+function handleTilemapPanToggle() {
+  state.tilemap.isPanMode = !state.tilemap.isPanMode;
+  elements.tilemapPanBtn.classList.toggle('active', state.tilemap.isPanMode);
+  elements.tilemapCanvasContainer.classList.toggle('pan-mode', state.tilemap.isPanMode);
+}
+
+// Keyboard shortcuts
+function handleKeyDown(e) {
+  // Ignore if typing in input field
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  // Spacebar: Toggle pan mode (tilemap only)
+  if (e.code === 'Space' && state.mode === 'tilemap') {
+    e.preventDefault();
+    handleTilemapPanToggle();
+  }
 }
 
 // Start
