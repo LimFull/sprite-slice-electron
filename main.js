@@ -290,3 +290,176 @@ ipcMain.handle('open-folder', async (event, folderPath) => {
   const { shell } = require('electron');
   shell.openPath(folderPath);
 });
+
+// =============================================
+// Tilemap Feature - IPC Handlers
+// =============================================
+
+// Slice sprite to palette (returns data URLs, no file saving)
+ipcMain.handle('slice-for-palette', async (event, options) => {
+  const { imagePath, columns, rows } = options;
+
+  try {
+    const metadata = await sharp(imagePath).metadata();
+    const tileWidth = Math.floor(metadata.width / columns);
+    const tileHeight = Math.floor(metadata.height / rows);
+
+    const tiles = [];
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < columns; col++) {
+        const buffer = await sharp(imagePath)
+          .extract({
+            left: col * tileWidth,
+            top: row * tileHeight,
+            width: tileWidth,
+            height: tileHeight
+          })
+          .png()
+          .toBuffer();
+
+        tiles.push({
+          dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+          col,
+          row,
+          index: row * columns + col
+        });
+      }
+    }
+
+    return {
+      success: true,
+      tiles,
+      tileWidth,
+      tileHeight,
+      totalTiles: tiles.length
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Load tiles from folder
+ipcMain.handle('load-tiles-from-folder', async (event) => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory']
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { success: false, error: 'No folder selected' };
+  }
+
+  const folderPath = result.filePaths[0];
+
+  try {
+    const files = fs.readdirSync(folderPath)
+      .filter(f => /\.(png|jpg|jpeg|webp)$/i.test(f))
+      .sort((a, b) => {
+        // Sort by number in filename if present
+        const numA = parseInt(a.match(/\d+/)?.[0] || '0');
+        const numB = parseInt(b.match(/\d+/)?.[0] || '0');
+        return numA - numB;
+      });
+
+    if (files.length === 0) {
+      return { success: false, error: 'No image files found in folder' };
+    }
+
+    const tiles = [];
+    let tileWidth = 0;
+    let tileHeight = 0;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const filePath = path.join(folderPath, file);
+      const metadata = await sharp(filePath).metadata();
+      const buffer = await sharp(filePath).png().toBuffer();
+
+      if (i === 0) {
+        tileWidth = metadata.width;
+        tileHeight = metadata.height;
+      }
+
+      tiles.push({
+        name: file,
+        dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+        width: metadata.width,
+        height: metadata.height,
+        sourcePath: filePath,
+        index: i
+      });
+    }
+
+    return {
+      success: true,
+      tiles,
+      tileWidth,
+      tileHeight,
+      totalTiles: tiles.length
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Export tilemap as PNG
+ipcMain.handle('export-tilemap', async (event, options) => {
+  const { grid, tiles, tileWidth, tileHeight, canvasWidth, canvasHeight } = options;
+
+  try {
+    // Show save dialog
+    const { filePath } = await dialog.showSaveDialog(mainWindow, {
+      title: 'Export Tilemap',
+      defaultPath: 'tilemap.png',
+      filters: [{ name: 'PNG Image', extensions: ['png'] }]
+    });
+
+    if (!filePath) {
+      return { success: false, error: 'No file selected' };
+    }
+
+    // Calculate output dimensions
+    const width = canvasWidth * tileWidth;
+    const height = canvasHeight * tileHeight;
+
+    // Build composite operations
+    const compositeOperations = [];
+
+    for (let y = 0; y < grid.length; y++) {
+      for (let x = 0; x < grid[y].length; x++) {
+        const tileId = grid[y][x];
+        if (tileId !== null && tileId !== undefined) {
+          const tile = tiles.find(t => t.id === tileId);
+          if (tile && tile.dataUrl) {
+            // Extract base64 data from data URL
+            const base64Data = tile.dataUrl.replace(/^data:image\/\w+;base64,/, '');
+            const buffer = Buffer.from(base64Data, 'base64');
+
+            compositeOperations.push({
+              input: buffer,
+              left: x * tileWidth,
+              top: y * tileHeight
+            });
+          }
+        }
+      }
+    }
+
+    // Create transparent background and composite tiles
+    await sharp({
+      create: {
+        width,
+        height,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    })
+      .composite(compositeOperations)
+      .png()
+      .toFile(filePath);
+
+    return { success: true, outputPath: filePath };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});

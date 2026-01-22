@@ -12,8 +12,18 @@
     <!-- Header -->
     <header class="header">
       <div class="drag-region"></div>
-      <h1 class="app-title">Sprite Slicer</h1>
-      <p class="app-subtitle">Split sprite sheets into individual frames</p>
+      <div class="header-content">
+        <div class="header-left">
+          <h1 class="app-title">Sprite Slicer</h1>
+          <p class="app-subtitle">Split sprite sheets into individual frames</p>
+        </div>
+        <div class="header-right">
+          <div class="mode-tabs">
+            <button id="modeSlice" class="mode-tab active">Slice</button>
+            <button id="modeTilemap" class="mode-tab">Tilemap</button>
+          </div>
+        </div>
+      </div>
     </header>
 
     <!-- Main Content -->
@@ -92,26 +102,76 @@
             Slice Sprites
           </button>
         </div>
+        <div class="action-buttons" style="margin-top: 12px;">
+          <button id="sliceToPaletteBtn" class="btn btn-accent btn-block" disabled>
+            Slice to Palette
+          </button>
+        </div>
       </section>
 
-      <!-- Right Panel: Preview -->
+      <!-- Right Panel: Preview / Tilemap Canvas -->
       <section class="panel preview-panel">
+        <!-- Slice Mode Content -->
+        <div id="sliceModeContent">
+          <div class="panel-header">
+            <h2 class="panel-title">Preview</h2>
+            <div id="zoomControls" class="zoom-controls hidden">
+              <button id="zoomOutBtn" class="zoom-btn" title="Zoom Out">-</button>
+              <span id="zoomLevel" class="zoom-level">100%</span>
+              <button id="zoomInBtn" class="zoom-btn" title="Zoom In">+</button>
+              <button id="zoomResetBtn" class="zoom-btn zoom-reset" title="Reset Zoom">Reset</button>
+            </div>
+          </div>
+          <div id="previewContainer" class="preview-container">
+            <div class="preview-placeholder">
+              <div class="placeholder-icon">🖼️</div>
+              <p>Select an image to preview</p>
+            </div>
+          </div>
+          <div id="previewInfo" class="preview-info"></div>
+        </div>
+
+        <!-- Tilemap Mode Content -->
+        <div id="tilemapModeContent" class="hidden">
+          <div class="tilemap-toolbar">
+            <div class="canvas-size-controls">
+              <label>Canvas:</label>
+              <input type="number" id="canvasColumns" value="16" min="1" max="64">
+              <span>x</span>
+              <input type="number" id="canvasRows" value="16" min="1" max="64">
+              <span>tiles</span>
+              <button id="resizeCanvasBtn" class="btn btn-secondary btn-sm">Apply</button>
+            </div>
+            <div class="tilemap-actions">
+              <button id="clearCanvasBtn" class="btn btn-secondary btn-sm">Clear</button>
+              <button id="exportTilemapBtn" class="btn btn-primary btn-sm">Export PNG</button>
+            </div>
+          </div>
+          <div id="tilemapCanvasContainer" class="tilemap-canvas-container">
+            <canvas id="tilemapCanvas"></canvas>
+          </div>
+          <div id="tilemapInfo" class="preview-info"></div>
+        </div>
+      </section>
+
+      <!-- Tile Palette Panel (Tilemap mode only) -->
+      <section class="panel palette-panel hidden" id="palettePanel">
         <div class="panel-header">
-          <h2 class="panel-title">Preview</h2>
-          <div id="zoomControls" class="zoom-controls hidden">
-            <button id="zoomOutBtn" class="zoom-btn" title="Zoom Out">-</button>
-            <span id="zoomLevel" class="zoom-level">100%</span>
-            <button id="zoomInBtn" class="zoom-btn" title="Zoom In">+</button>
-            <button id="zoomResetBtn" class="zoom-btn zoom-reset" title="Reset Zoom">Reset</button>
-          </div>
+          <h2 class="panel-title">Tile Palette</h2>
         </div>
-        <div id="previewContainer" class="preview-container">
-          <div class="preview-placeholder">
-            <div class="placeholder-icon">🖼️</div>
-            <p>Select an image to preview</p>
-          </div>
+        <div class="palette-toolbar">
+          <button id="loadTilesBtn" class="btn btn-secondary btn-sm btn-block">Load Tiles from Folder</button>
         </div>
-        <div id="previewInfo" class="preview-info"></div>
+        <div class="palette-info">
+          <span id="paletteCount">0</span> tiles loaded
+          <span id="tileSizeInfo"></span>
+        </div>
+        <div id="tilePalette" class="tile-palette"></div>
+        <div class="eraser-tool">
+          <button id="eraserBtn" class="btn btn-secondary btn-block">
+            Eraser Tool
+          </button>
+        </div>
       </section>
     </main>
 

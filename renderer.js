@@ -13,6 +13,18 @@ const state = {
     isDragging: false,
     startX: 0,
     startY: 0
+  },
+  // Tilemap feature
+  mode: 'slice', // 'slice' | 'tilemap'
+  slicedTiles: [], // { id, name, dataUrl, width, height, index }
+  tilemap: {
+    canvasWidth: 16,
+    canvasHeight: 16,
+    tileWidth: 32,
+    tileHeight: 32,
+    grid: [], // 2D array: grid[y][x] = tileId | null
+    selectedTileId: null,
+    isErasing: false
   }
 };
 
@@ -46,7 +58,30 @@ const elements = {
   zoomInBtn: document.getElementById('zoomInBtn'),
   zoomOutBtn: document.getElementById('zoomOutBtn'),
   zoomResetBtn: document.getElementById('zoomResetBtn'),
-  zoomLevel: document.getElementById('zoomLevel')
+  zoomLevel: document.getElementById('zoomLevel'),
+  // Mode tabs
+  modeSlice: document.getElementById('modeSlice'),
+  modeTilemap: document.getElementById('modeTilemap'),
+  mainContent: document.querySelector('.main-content'),
+  // Slice mode content
+  sliceModeContent: document.getElementById('sliceModeContent'),
+  sliceToPaletteBtn: document.getElementById('sliceToPaletteBtn'),
+  // Tilemap mode content
+  tilemapModeContent: document.getElementById('tilemapModeContent'),
+  palettePanel: document.getElementById('palettePanel'),
+  tilePalette: document.getElementById('tilePalette'),
+  paletteCount: document.getElementById('paletteCount'),
+  tileSizeInfo: document.getElementById('tileSizeInfo'),
+  loadTilesBtn: document.getElementById('loadTilesBtn'),
+  eraserBtn: document.getElementById('eraserBtn'),
+  // Tilemap canvas
+  tilemapCanvas: document.getElementById('tilemapCanvas'),
+  canvasColumns: document.getElementById('canvasColumns'),
+  canvasRows: document.getElementById('canvasRows'),
+  resizeCanvasBtn: document.getElementById('resizeCanvasBtn'),
+  clearCanvasBtn: document.getElementById('clearCanvasBtn'),
+  exportTilemapBtn: document.getElementById('exportTilemapBtn'),
+  tilemapInfo: document.getElementById('tilemapInfo')
 };
 
 // Initialize
@@ -89,6 +124,21 @@ function setupEventListeners() {
 
   // Mouse wheel zoom
   elements.previewContainer.addEventListener('wheel', handleWheelZoom);
+
+  // Mode tabs
+  elements.modeSlice.addEventListener('click', () => handleModeChange('slice'));
+  elements.modeTilemap.addEventListener('click', () => handleModeChange('tilemap'));
+
+  // Tilemap feature
+  elements.sliceToPaletteBtn.addEventListener('click', handleSliceToPalette);
+  elements.loadTilesBtn.addEventListener('click', handleLoadTilesFromFolder);
+  elements.eraserBtn.addEventListener('click', handleEraserToggle);
+  elements.resizeCanvasBtn.addEventListener('click', handleResizeCanvas);
+  elements.clearCanvasBtn.addEventListener('click', handleClearCanvas);
+  elements.exportTilemapBtn.addEventListener('click', handleExportTilemap);
+
+  // Tilemap canvas events
+  setupTilemapCanvasEvents();
 }
 
 // Drag and drop setup
@@ -463,6 +513,7 @@ function updateUI() {
 
   elements.previewBtn.disabled = !hasImages;
   elements.sliceBtn.disabled = !hasImages || !hasOutput;
+  elements.sliceToPaletteBtn.disabled = !hasImages;
 
   // Update total frames
   handleGridChange();
@@ -489,6 +540,384 @@ function resetPreview() {
   elements.previewContainer.classList.remove('zoomable');
   elements.zoomControls.classList.add('hidden');
   elements.previewInfo.innerHTML = '';
+}
+
+// =============================================
+// Tilemap Feature Functions
+// =============================================
+
+// Mode Change
+function handleModeChange(mode) {
+  state.mode = mode;
+
+  // Update tab active state
+  elements.modeSlice.classList.toggle('active', mode === 'slice');
+  elements.modeTilemap.classList.toggle('active', mode === 'tilemap');
+
+  // Toggle panel visibility
+  elements.sliceModeContent.classList.toggle('hidden', mode !== 'slice');
+  elements.tilemapModeContent.classList.toggle('hidden', mode !== 'tilemap');
+  elements.palettePanel.classList.toggle('hidden', mode !== 'tilemap');
+  elements.mainContent.classList.toggle('tilemap-mode', mode === 'tilemap');
+
+  if (mode === 'tilemap') {
+    initTilemapCanvas();
+    renderTilePalette();
+    updateTilemapInfo();
+  }
+}
+
+// Slice to Palette
+async function handleSliceToPalette() {
+  if (state.images.length === 0) return;
+
+  const columns = parseInt(elements.columns.value) || 1;
+  const rows = parseInt(elements.rows.value) || 1;
+
+  // Show progress
+  elements.progressModal.classList.remove('hidden');
+  elements.progressFill.style.width = '0%';
+  elements.progressText.textContent = 'Slicing to palette...';
+
+  try {
+    let totalProcessed = 0;
+    const totalImages = state.images.length;
+
+    for (const image of state.images) {
+      const result = await window.electronAPI.sliceForPalette({
+        imagePath: image.path,
+        columns,
+        rows
+      });
+
+      if (result.success) {
+        result.tiles.forEach((tile, index) => {
+          state.slicedTiles.push({
+            id: `tile_${Date.now()}_${state.slicedTiles.length}`,
+            name: `${image.name.replace(/\.[^.]+$/, '')}_${tile.index}`,
+            dataUrl: tile.dataUrl,
+            width: result.tileWidth,
+            height: result.tileHeight,
+            index: state.slicedTiles.length
+          });
+        });
+
+        // Update tile size from first result
+        if (state.tilemap.tileWidth === 32 && result.tileWidth) {
+          state.tilemap.tileWidth = result.tileWidth;
+          state.tilemap.tileHeight = result.tileHeight;
+        }
+      }
+
+      totalProcessed++;
+      const progress = (totalProcessed / totalImages) * 100;
+      elements.progressFill.style.width = `${progress}%`;
+      elements.progressText.textContent = `Processing ${totalProcessed} / ${totalImages}...`;
+    }
+
+    elements.progressModal.classList.add('hidden');
+
+    // Switch to tilemap mode
+    handleModeChange('tilemap');
+
+  } catch (error) {
+    elements.progressModal.classList.add('hidden');
+    alert(`Error: ${error.message}`);
+  }
+}
+
+// Load Tiles from Folder
+async function handleLoadTilesFromFolder() {
+  const result = await window.electronAPI.loadTilesFromFolder();
+
+  if (result.success) {
+    // Clear existing tiles and add new ones
+    state.slicedTiles = result.tiles.map((tile, index) => ({
+      id: `tile_${Date.now()}_${index}`,
+      name: tile.name,
+      dataUrl: tile.dataUrl,
+      width: tile.width,
+      height: tile.height,
+      index
+    }));
+
+    // Update tile size
+    if (result.tileWidth && result.tileHeight) {
+      state.tilemap.tileWidth = result.tileWidth;
+      state.tilemap.tileHeight = result.tileHeight;
+    }
+
+    renderTilePalette();
+    initTilemapCanvas();
+    updateTilemapInfo();
+  } else if (result.error !== 'No folder selected') {
+    alert(`Error: ${result.error}`);
+  }
+}
+
+// Render Tile Palette
+function renderTilePalette() {
+  elements.tilePalette.innerHTML = state.slicedTiles.map((tile, index) => `
+    <div class="palette-tile ${tile.id === state.tilemap.selectedTileId ? 'selected' : ''}"
+         data-tile-id="${tile.id}"
+         draggable="true"
+         title="${tile.name}">
+      <img src="${tile.dataUrl}" alt="${tile.name}">
+      <span class="tile-index">${index}</span>
+    </div>
+  `).join('');
+
+  elements.paletteCount.textContent = state.slicedTiles.length;
+
+  if (state.slicedTiles.length > 0) {
+    elements.tileSizeInfo.textContent = `(${state.tilemap.tileWidth}x${state.tilemap.tileHeight}px)`;
+  } else {
+    elements.tileSizeInfo.textContent = '';
+  }
+
+  // Event binding
+  elements.tilePalette.querySelectorAll('.palette-tile').forEach(tile => {
+    tile.addEventListener('click', () => handleTileSelect(tile.dataset.tileId));
+    tile.addEventListener('dragstart', (e) => handleTileDragStart(e, tile.dataset.tileId));
+  });
+}
+
+// Tile Selection
+function handleTileSelect(tileId) {
+  state.tilemap.selectedTileId = tileId;
+  state.tilemap.isErasing = false;
+  elements.eraserBtn.classList.remove('active');
+  renderTilePalette();
+}
+
+// Eraser Toggle
+function handleEraserToggle() {
+  state.tilemap.isErasing = !state.tilemap.isErasing;
+  state.tilemap.selectedTileId = null;
+  elements.eraserBtn.classList.toggle('active', state.tilemap.isErasing);
+  renderTilePalette();
+}
+
+// Tile Drag Start
+function handleTileDragStart(e, tileId) {
+  e.dataTransfer.setData('text/plain', tileId);
+  e.dataTransfer.effectAllowed = 'copy';
+}
+
+// =============================================
+// Tilemap Canvas Functions
+// =============================================
+
+// Initialize Canvas
+function initTilemapCanvas() {
+  const { canvasWidth, canvasHeight, tileWidth, tileHeight } = state.tilemap;
+
+  // Set canvas size
+  elements.tilemapCanvas.width = canvasWidth * tileWidth;
+  elements.tilemapCanvas.height = canvasHeight * tileHeight;
+
+  // Initialize grid if empty
+  if (state.tilemap.grid.length === 0) {
+    initGrid();
+  }
+
+  renderTilemapCanvas();
+}
+
+// Initialize Grid
+function initGrid() {
+  const { canvasWidth, canvasHeight } = state.tilemap;
+  state.tilemap.grid = Array(canvasHeight).fill(null)
+    .map(() => Array(canvasWidth).fill(null));
+}
+
+// Resize Canvas
+function handleResizeCanvas() {
+  const newWidth = parseInt(elements.canvasColumns.value) || 16;
+  const newHeight = parseInt(elements.canvasRows.value) || 16;
+
+  const { canvasWidth, canvasHeight, tileWidth, tileHeight } = state.tilemap;
+  const oldGrid = state.tilemap.grid;
+
+  // Update dimensions
+  state.tilemap.canvasWidth = newWidth;
+  state.tilemap.canvasHeight = newHeight;
+
+  // Resize canvas
+  elements.tilemapCanvas.width = newWidth * tileWidth;
+  elements.tilemapCanvas.height = newHeight * tileHeight;
+
+  // Initialize new grid
+  initGrid();
+
+  // Copy old data
+  for (let y = 0; y < Math.min(oldGrid.length, newHeight); y++) {
+    for (let x = 0; x < Math.min(oldGrid[y]?.length || 0, newWidth); x++) {
+      state.tilemap.grid[y][x] = oldGrid[y][x];
+    }
+  }
+
+  renderTilemapCanvas();
+  updateTilemapInfo();
+}
+
+// Clear Canvas
+function handleClearCanvas() {
+  initGrid();
+  renderTilemapCanvas();
+}
+
+// Render Canvas
+function renderTilemapCanvas() {
+  const canvas = elements.tilemapCanvas;
+  const ctx = canvas.getContext('2d');
+  const { canvasWidth, canvasHeight, tileWidth, tileHeight, grid } = state.tilemap;
+
+  // Clear canvas
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Preload images for rendering
+  const tileImages = {};
+  state.slicedTiles.forEach(tile => {
+    const img = new Image();
+    img.src = tile.dataUrl;
+    tileImages[tile.id] = img;
+  });
+
+  // Render tiles
+  for (let y = 0; y < canvasHeight; y++) {
+    for (let x = 0; x < canvasWidth; x++) {
+      const tileId = grid[y]?.[x];
+      if (tileId && tileImages[tileId]) {
+        ctx.drawImage(tileImages[tileId], x * tileWidth, y * tileHeight, tileWidth, tileHeight);
+      }
+    }
+  }
+
+  // Draw grid lines
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  ctx.lineWidth = 1;
+
+  for (let x = 0; x <= canvasWidth; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * tileWidth, 0);
+    ctx.lineTo(x * tileWidth, canvas.height);
+    ctx.stroke();
+  }
+
+  for (let y = 0; y <= canvasHeight; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * tileHeight);
+    ctx.lineTo(canvas.width, y * tileHeight);
+    ctx.stroke();
+  }
+}
+
+// Setup Canvas Events
+function setupTilemapCanvasEvents() {
+  const canvas = elements.tilemapCanvas;
+  let isDrawing = false;
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (state.mode !== 'tilemap') return;
+    isDrawing = true;
+    handleCanvasClick(e);
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (state.mode !== 'tilemap' || !isDrawing) return;
+    handleCanvasClick(e);
+  });
+
+  canvas.addEventListener('mouseup', () => {
+    isDrawing = false;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    isDrawing = false;
+  });
+
+  // Drag and drop support
+  canvas.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+
+  canvas.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const tileId = e.dataTransfer.getData('text/plain');
+    if (tileId) {
+      state.tilemap.selectedTileId = tileId;
+      state.tilemap.isErasing = false;
+      elements.eraserBtn.classList.remove('active');
+      renderTilePalette();
+      handleCanvasClick(e);
+    }
+  });
+}
+
+// Canvas Click Handler
+function handleCanvasClick(e) {
+  const canvas = elements.tilemapCanvas;
+  const rect = canvas.getBoundingClientRect();
+  const { tileWidth, tileHeight, grid, selectedTileId, isErasing } = state.tilemap;
+
+  // Convert click position to tile coordinates
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const x = Math.floor((e.clientX - rect.left) * scaleX / tileWidth);
+  const y = Math.floor((e.clientY - rect.top) * scaleY / tileHeight);
+
+  // Bounds check
+  if (x < 0 || x >= grid[0]?.length || y < 0 || y >= grid.length) return;
+
+  // Place or erase tile
+  if (isErasing) {
+    grid[y][x] = null;
+  } else if (selectedTileId) {
+    grid[y][x] = selectedTileId;
+  }
+
+  renderTilemapCanvas();
+}
+
+// Export Tilemap
+async function handleExportTilemap() {
+  if (state.slicedTiles.length === 0) {
+    alert('No tiles loaded. Please load tiles first.');
+    return;
+  }
+
+  const result = await window.electronAPI.exportTilemap({
+    grid: state.tilemap.grid,
+    tiles: state.slicedTiles,
+    tileWidth: state.tilemap.tileWidth,
+    tileHeight: state.tilemap.tileHeight,
+    canvasWidth: state.tilemap.canvasWidth,
+    canvasHeight: state.tilemap.canvasHeight
+  });
+
+  if (result.success) {
+    alert(`Tilemap exported to:\n${result.outputPath}`);
+  } else if (result.error !== 'No file selected') {
+    alert(`Export failed: ${result.error}`);
+  }
+}
+
+// Update Tilemap Info
+function updateTilemapInfo() {
+  const { canvasWidth, canvasHeight, tileWidth, tileHeight } = state.tilemap;
+  const pixelWidth = canvasWidth * tileWidth;
+  const pixelHeight = canvasHeight * tileHeight;
+
+  elements.tilemapInfo.innerHTML = `
+    Canvas: <span>${canvasWidth} x ${canvasHeight}</span> tiles |
+    Output size: <span>${pixelWidth} x ${pixelHeight}</span> pixels
+  `;
+
+  // Update input values
+  elements.canvasColumns.value = canvasWidth;
+  elements.canvasRows.value = canvasHeight;
 }
 
 // Start
