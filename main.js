@@ -422,10 +422,18 @@ ipcMain.handle('export-tilemap', async (event, options) => {
     const width = canvasWidth * tileWidth;
     const height = canvasHeight * tileHeight;
 
-    // Build composite operations
+    // Build composite operations and create tile ID to index map
     const compositeOperations = [];
+    const tileIdToIndex = new Map();
+    tiles.forEach((tile, index) => {
+      tileIdToIndex.set(tile.id, index);
+    });
+
+    // Build CSV data
+    const csvRows = [];
 
     for (let y = 0; y < grid.length; y++) {
+      const csvRow = [];
       for (let x = 0; x < grid[y].length; x++) {
         const tileId = grid[y][x];
         if (tileId !== null && tileId !== undefined) {
@@ -441,8 +449,15 @@ ipcMain.handle('export-tilemap', async (event, options) => {
               top: y * tileHeight
             });
           }
+          // Add tile index to CSV row
+          const tileIndex = tileIdToIndex.get(tileId);
+          csvRow.push(tileIndex !== undefined ? tileIndex : 'x');
+        } else {
+          // Empty cell
+          csvRow.push('x');
         }
       }
+      csvRows.push(csvRow.join(','));
     }
 
     // Create transparent background and composite tiles
@@ -458,7 +473,12 @@ ipcMain.handle('export-tilemap', async (event, options) => {
       .png()
       .toFile(filePath);
 
-    return { success: true, outputPath: filePath };
+    // Save CSV file with the same name but .csv extension
+    const csvFilePath = filePath.replace(/\.png$/i, '.csv');
+    const csvContent = csvRows.join('\n');
+    fs.writeFileSync(csvFilePath, csvContent, 'utf8');
+
+    return { success: true, outputPath: filePath, csvPath: csvFilePath };
   } catch (error) {
     return { success: false, error: error.message };
   }

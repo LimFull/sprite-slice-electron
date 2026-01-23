@@ -1029,7 +1029,7 @@ async function handleExportTilemap() {
   });
 
   if (result.success) {
-    alert(`Tilemap exported to:\n${result.outputPath}`);
+    alert(`Tilemap exported to:\n${result.outputPath}\n\nCSV file saved to:\n${result.csvPath}`);
   } else if (result.error !== 'No file selected') {
     alert(`Export failed: ${result.error}`);
   }
