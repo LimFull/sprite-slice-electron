@@ -37,7 +37,8 @@ const state = {
       startX: 0,
       startY: 0
     },
-    isPanMode: false
+    isPanMode: false,
+    backgroundImage: null // { dataUrl, width, height }
   }
 };
 
@@ -103,7 +104,9 @@ const elements = {
   tilemapZoomOutBtn: document.getElementById('tilemapZoomOutBtn'),
   tilemapZoomResetBtn: document.getElementById('tilemapZoomResetBtn'),
   tilemapZoomLevel: document.getElementById('tilemapZoomLevel'),
-  tilemapPanBtn: document.getElementById('tilemapPanBtn')
+  tilemapPanBtn: document.getElementById('tilemapPanBtn'),
+  loadBgBtn: document.getElementById('loadBgBtn'),
+  clearBgBtn: document.getElementById('clearBgBtn')
 };
 
 // Initialize
@@ -159,6 +162,8 @@ function setupEventListeners() {
   elements.resizeCanvasBtn.addEventListener('click', handleResizeCanvas);
   elements.clearCanvasBtn.addEventListener('click', handleClearCanvas);
   elements.exportTilemapBtn.addEventListener('click', handleExportTilemap);
+  elements.loadBgBtn.addEventListener('click', handleLoadBackground);
+  elements.clearBgBtn.addEventListener('click', handleClearBackground);
 
   // Tilemap zoom controls
   elements.tilemapZoomInBtn.addEventListener('click', handleTilemapZoomIn);
@@ -771,6 +776,46 @@ function handleTileDragStart(e, tileId) {
   e.dataTransfer.effectAllowed = 'copy';
 }
 
+// Background Image
+async function handleLoadBackground() {
+  const result = await window.electronAPI.loadBackgroundImage();
+  if (result.success) {
+    state.tilemap.backgroundImage = {
+      dataUrl: result.dataUrl,
+      width: result.width,
+      height: result.height
+    };
+    elements.clearBgBtn.classList.remove('hidden');
+
+    // Resize canvas to match background image
+    const { tileWidth, tileHeight } = state.tilemap;
+    const newCanvasWidth = Math.ceil(result.width / tileWidth);
+    const newCanvasHeight = Math.ceil(result.height / tileHeight);
+
+    const oldGrid = state.tilemap.grid;
+    state.tilemap.canvasWidth = newCanvasWidth;
+    state.tilemap.canvasHeight = newCanvasHeight;
+
+    initGrid();
+
+    // Preserve existing tiles
+    for (let y = 0; y < Math.min(oldGrid.length, newCanvasHeight); y++) {
+      for (let x = 0; x < Math.min(oldGrid[y]?.length || 0, newCanvasWidth); x++) {
+        state.tilemap.grid[y][x] = oldGrid[y][x];
+      }
+    }
+
+    initTilemapCanvas();
+    updateTilemapInfo();
+  }
+}
+
+function handleClearBackground() {
+  state.tilemap.backgroundImage = null;
+  elements.clearBgBtn.classList.add('hidden');
+  renderTilemapCanvas();
+}
+
 // =============================================
 // Tilemap Canvas Functions
 // =============================================
@@ -838,10 +883,17 @@ function handleClearCanvas() {
 function renderTilemapCanvas() {
   const canvas = elements.tilemapCanvas;
   const ctx = canvas.getContext('2d');
-  const { canvasWidth, canvasHeight, tileWidth, tileHeight, grid } = state.tilemap;
+  const { canvasWidth, canvasHeight, tileWidth, tileHeight, grid, backgroundImage } = state.tilemap;
 
   // Clear canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw background image if loaded
+  if (backgroundImage) {
+    const bgImg = new Image();
+    bgImg.src = backgroundImage.dataUrl;
+    ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+  }
 
   // Preload images for rendering
   const tileImages = {};
@@ -862,7 +914,7 @@ function renderTilemapCanvas() {
   }
 
   // Draw grid lines
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  ctx.strokeStyle = backgroundImage ? 'rgba(255, 255, 255, 0.3)' : 'rgba(255, 255, 255, 0.15)';
   ctx.lineWidth = 1;
 
   for (let x = 0; x <= canvasWidth; x++) {
@@ -1014,8 +1066,8 @@ function handleCanvasClick(e) {
 
 // Export Tilemap
 async function handleExportTilemap() {
-  if (state.slicedTiles.length === 0) {
-    alert('No tiles loaded. Please load tiles first.');
+  if (state.slicedTiles.length === 0 && !state.tilemap.backgroundImage) {
+    alert('No tiles or background loaded.');
     return;
   }
 
@@ -1025,7 +1077,8 @@ async function handleExportTilemap() {
     tileWidth: state.tilemap.tileWidth,
     tileHeight: state.tilemap.tileHeight,
     canvasWidth: state.tilemap.canvasWidth,
-    canvasHeight: state.tilemap.canvasHeight
+    canvasHeight: state.tilemap.canvasHeight,
+    backgroundDataUrl: state.tilemap.backgroundImage?.dataUrl || null
   });
 
   if (result.success) {

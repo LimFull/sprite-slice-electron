@@ -402,9 +402,37 @@ ipcMain.handle('load-tiles-from-folder', async (event) => {
   }
 });
 
+// Load background image for tilemap
+ipcMain.handle('load-background-image', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }
+    ]
+  });
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { success: false, error: 'No file selected' };
+  }
+
+  const filePath = result.filePaths[0];
+  try {
+    const metadata = await sharp(filePath).metadata();
+    const buffer = await sharp(filePath).png().toBuffer();
+    return {
+      success: true,
+      dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+      width: metadata.width,
+      height: metadata.height
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Export tilemap as PNG
 ipcMain.handle('export-tilemap', async (event, options) => {
-  const { grid, tiles, tileWidth, tileHeight, canvasWidth, canvasHeight } = options;
+  const { grid, tiles, tileWidth, tileHeight, canvasWidth, canvasHeight, backgroundDataUrl } = options;
 
   try {
     // Show save dialog
@@ -460,18 +488,34 @@ ipcMain.handle('export-tilemap', async (event, options) => {
       csvRows.push(csvRow.join(','));
     }
 
-    // Create transparent background and composite tiles
-    await sharp({
-      create: {
-        width,
-        height,
-        channels: 4,
-        background: { r: 0, g: 0, b: 0, alpha: 0 }
-      }
-    })
-      .composite(compositeOperations)
-      .png()
-      .toFile(filePath);
+    // Create base image (background or transparent)
+    let baseImage;
+    if (backgroundDataUrl) {
+      const bgBase64 = backgroundDataUrl.replace(/^data:image\/\w+;base64,/, '');
+      const bgBuffer = Buffer.from(bgBase64, 'base64');
+      baseImage = sharp(bgBuffer).resize(width, height, { fit: 'fill' }).png();
+    } else {
+      baseImage = sharp({
+        create: {
+          width,
+          height,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 }
+        }
+      });
+    }
+
+    // Composite tiles on top
+    if (compositeOperations.length > 0) {
+      await baseImage
+        .composite(compositeOperations)
+        .png()
+        .toFile(filePath);
+    } else {
+      await baseImage
+        .png()
+        .toFile(filePath);
+    }
 
     // Save CSV file with the same name but .csv extension
     const csvFilePath = filePath.replace(/\.png$/i, '.csv');

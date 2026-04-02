@@ -13,5 +13,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Tilemap APIs
   sliceForPalette: (options) => ipcRenderer.invoke('slice-for-palette', options),
   loadTilesFromFolder: () => ipcRenderer.invoke('load-tiles-from-folder'),
-  exportTilemap: (options) => ipcRenderer.invoke('export-tilemap', options)
+  exportTilemap: (options) => ipcRenderer.invoke('export-tilemap', options),
+  loadBackgroundImage: () => ipcRenderer.invoke('load-background-image')
 });
