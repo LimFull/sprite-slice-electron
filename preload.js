@@ -15,5 +15,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sliceForPalette: (options) => ipcRenderer.invoke('slice-for-palette', options),
   loadTilesFromFolder: () => ipcRenderer.invoke('load-tiles-from-folder'),
   exportTilemap: (options) => ipcRenderer.invoke('export-tilemap', options),
-  loadBackgroundImage: () => ipcRenderer.invoke('load-background-image')
+  loadBackgroundImage: () => ipcRenderer.invoke('load-background-image'),
+
+  // Resize APIs
+  batchResize: (options) => ipcRenderer.invoke('batch-resize', options)
 });

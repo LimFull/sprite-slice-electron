@@ -255,6 +255,94 @@ body {
   flex: 1;
 }
 
+.padding-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+}
+
+.padding-inputs .input-group {
+  margin-bottom: 0;
+}
+
+/* Resize ratio presets */
+.ratio-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.ratio-preset-btn {
+  padding: 6px 12px;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ratio-preset-btn:hover {
+  border-color: var(--accent);
+  background-color: rgba(233, 69, 96, 0.1);
+}
+
+.ratio-preset-btn.active {
+  background: linear-gradient(135deg, var(--accent) 0%, #c73e54 100%);
+  color: white;
+  border-color: var(--accent);
+}
+
+.resize-batch-summary {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.resize-batch-summary:empty {
+  display: none;
+}
+
+.resize-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.resize-row.selected {
+  border-color: var(--accent);
+}
+
+.resize-row-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-primary);
+}
+
+.resize-row-dims {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.resize-row-dims strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* Checkbox */
 .checkbox-group {
   display: flex;
@@ -1066,6 +1154,25 @@ body {
 
 #tilemapInfo {
   margin-top: 16px;
+}
+
+/* =============================================
+   Grid Preview Canvas
+   ============================================= */
+.grid-preview-canvas {
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background-color: #2a2a4a;
+  background-image:
+    linear-gradient(45deg, #333 25%, transparent 25%),
+    linear-gradient(-45deg, #333 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333 75%),
+    linear-gradient(-45deg, transparent 75%, #333 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0px;
 }
 
 /* =============================================

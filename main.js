@@ -150,7 +150,17 @@ ipcMain.handle('slice-sprite', async (event, options) => {
 
 // Batch slice multiple sprites
 ipcMain.handle('batch-slice', async (event, options) => {
-  const { imagePaths, columns, rows, outputFolder, baseName, useSequentialNumbering, frameOffsetsByPath = {} } = options;
+  const {
+    imagePaths,
+    columns,
+    rows,
+    outputFolder,
+    baseName,
+    useSequentialNumbering,
+    frameOffsetsByPath = {},
+    padding = { top: 0, right: 0, bottom: 0, left: 0 },
+    imageOffset = { x: 0, y: 0 }
+  } = options;
 
   const allResults = [];
   let currentNumber = 0;
@@ -166,7 +176,9 @@ ipcMain.handle('batch-slice', async (event, options) => {
       outputFolder,
       baseName: useSequentialNumbering ? baseName : name,
       startNumber: useSequentialNumbering ? currentNumber : 0,
-      frameOffsets: frameOffsetsByPath[imagePath] || {}
+      frameOffsets: frameOffsetsByPath[imagePath] || {},
+      padding,
+      imageOffset
     });
 
     if (result.success) {
@@ -190,14 +202,34 @@ ipcMain.handle('batch-slice', async (event, options) => {
 });
 
 async function sliceSingleSprite(options) {
-  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0, frameOffsets = {} } = options;
+  const {
+    imagePath, columns, rows, outputFolder, baseName, startNumber = 0,
+    frameOffsets = {},
+    padding = { top: 0, right: 0, bottom: 0, left: 0 },
+    imageOffset = { x: 0, y: 0 }
+  } = options;
 
   try {
-    const image = sharp(imagePath);
-    const metadata = await image.metadata();
+    const metadata = await sharp(imagePath).metadata();
+    const imgW = metadata.width;
+    const imgH = metadata.height;
 
-    const frameWidth = Math.floor(metadata.width / columns);
-    const frameHeight = Math.floor(metadata.height / rows);
+    const padTop = padding.top || 0;
+    const padRight = padding.right || 0;
+    const padBottom = padding.bottom || 0;
+    const padLeft = padding.left || 0;
+    const offsetX = imageOffset.x || 0;
+    const offsetY = imageOffset.y || 0;
+
+    // Virtual canvas: positive padding extends, negative crops.
+    const canvasW = Math.max(0, imgW + padLeft + padRight);
+    const canvasH = Math.max(0, imgH + padTop + padBottom);
+    // Where the original image is drawn on the canvas (image offset shifts further).
+    const imageX = padLeft + offsetX;
+    const imageY = padTop + offsetY;
+
+    const frameWidth = columns > 0 ? Math.floor(canvasW / columns) : 0;
+    const frameHeight = rows > 0 ? Math.floor(canvasH / rows) : 0;
 
     const results = [];
     let frameNumber = startNumber;
@@ -212,44 +244,56 @@ async function sliceSingleSprite(options) {
         const outputName = `${baseName}_${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
-        if (dx === 0 && dy === 0) {
-          await sharp(imagePath)
-            .extract({
-              left: col * frameWidth,
-              top: row * frameHeight,
-              width: frameWidth,
-              height: frameHeight
-            })
-            .png()
-            .toFile(outputPath);
+        if (frameWidth <= 0 || frameHeight <= 0) {
+          await sharp({
+            create: { width: 1, height: 1, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+          }).png().toFile(outputPath);
         } else {
-          const cropLeft = Math.max(-dx, 0);
-          const cropTop = Math.max(-dy, 0);
-          const cropW = frameWidth - Math.abs(dx);
-          const cropH = frameHeight - Math.abs(dy);
+          // Frame's region on virtual canvas.
+          const frameCanvasX = col * frameWidth;
+          const frameCanvasY = row * frameHeight;
+          // Map to image-relative coords (where on the original image this frame's content comes from).
+          const imgRelX = frameCanvasX - imageX;
+          const imgRelY = frameCanvasY - imageY;
+
+          // Clip to the original image's bounds.
+          const srcL = Math.max(0, imgRelX);
+          const srcT = Math.max(0, imgRelY);
+          const srcR = Math.min(imgW, imgRelX + frameWidth);
+          const srcB = Math.min(imgH, imgRelY + frameHeight);
+          const srcW = srcR - srcL;
+          const srcH = srcB - srcT;
+
+          // Where the clipped piece goes on the output frame, before per-frame offset.
+          const baseDestX = srcL - imgRelX;
+          const baseDestY = srcT - imgRelY;
+          // Apply per-frame offset (shifts image content within the frame).
+          const finalDestX = baseDestX + dx;
+          const finalDestY = baseDestY + dy;
+
+          // Clip the placement to the frame's [0, frameW) × [0, frameH).
+          const placeL = Math.max(0, finalDestX);
+          const placeT = Math.max(0, finalDestY);
+          const placeR = Math.min(frameWidth, finalDestX + srcW);
+          const placeB = Math.min(frameHeight, finalDestY + srcH);
 
           const blank = sharp({
-            create: {
-              width: frameWidth,
-              height: frameHeight,
-              channels: 4,
-              background: { r: 0, g: 0, b: 0, alpha: 0 }
-            }
+            create: { width: frameWidth, height: frameHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
           });
 
-          if (cropW > 0 && cropH > 0) {
+          if (srcW > 0 && srcH > 0 && placeR > placeL && placeB > placeT) {
+            const finalSrcL = srcL + (placeL - finalDestX);
+            const finalSrcT = srcT + (placeT - finalDestY);
+            const finalSrcW = placeR - placeL;
+            const finalSrcH = placeB - placeT;
+
             const piece = await sharp(imagePath)
-              .extract({
-                left: col * frameWidth + cropLeft,
-                top: row * frameHeight + cropTop,
-                width: cropW,
-                height: cropH
-              })
+              .extract({ left: finalSrcL, top: finalSrcT, width: finalSrcW, height: finalSrcH })
               .png()
               .toBuffer();
 
             await blank
-              .composite([{ input: piece, left: Math.max(dx, 0), top: Math.max(dy, 0) }])
+              .composite([{ input: piece, left: placeL, top: placeT }])
               .png()
               .toFile(outputPath);
           } else {
@@ -257,12 +301,7 @@ async function sliceSingleSprite(options) {
           }
         }
 
-        results.push({
-          frameNumber,
-          outputPath,
-          outputName
-        });
-
+        results.push({ frameNumber, outputPath, outputName });
         frameNumber++;
       }
     }
@@ -285,12 +324,20 @@ async function sliceSingleSprite(options) {
 
 // Generate preview with grid overlay
 ipcMain.handle('generate-preview', async (event, options) => {
-  const { imagePath, columns, rows } = options;
+  const { imagePath, columns, rows, padding = { top: 0, right: 0, bottom: 0, left: 0 } } = options;
 
   try {
     const metadata = await sharp(imagePath).metadata();
-    const frameWidth = Math.floor(metadata.width / columns);
-    const frameHeight = Math.floor(metadata.height / rows);
+
+    const padTop = Math.max(0, padding.top || 0);
+    const padRight = Math.max(0, padding.right || 0);
+    const padBottom = Math.max(0, padding.bottom || 0);
+    const padLeft = Math.max(0, padding.left || 0);
+
+    const effectiveWidth = Math.max(0, metadata.width - padLeft - padRight);
+    const effectiveHeight = Math.max(0, metadata.height - padTop - padBottom);
+    const frameWidth = effectiveWidth > 0 ? Math.floor(effectiveWidth / columns) : 0;
+    const frameHeight = effectiveHeight > 0 ? Math.floor(effectiveHeight / rows) : 0;
 
     // Resize image first to get exact dimensions for the SVG overlay
     const maxSize = 600;
@@ -302,21 +349,46 @@ ipcMain.handle('generate-preview', async (event, options) => {
       .resize(previewWidth, previewHeight, { fit: 'fill' })
       .toBuffer();
 
-    // Create SVG overlay with grid lines at the preview size
-    const svgLines = [];
-    const scaledFrameWidth = previewWidth / columns;
-    const scaledFrameHeight = previewHeight / rows;
+    // Calculate scaled padding and effective grid area in preview coordinates
+    const padTopS = padTop * scale;
+    const padLeftS = padLeft * scale;
+    const effectiveWidthS = effectiveWidth * scale;
+    const effectiveHeightS = effectiveHeight * scale;
+    const scaledFrameWidth = columns > 0 ? effectiveWidthS / columns : 0;
+    const scaledFrameHeight = rows > 0 ? effectiveHeightS / rows : 0;
 
-    // Vertical lines
-    for (let i = 1; i < columns; i++) {
-      const x = Math.round(i * scaledFrameWidth);
-      svgLines.push(`<line x1="${x}" y1="0" x2="${x}" y2="${previewHeight}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+    const svgLines = [];
+
+    // Padding overlay (semi-transparent dim area outside grid)
+    if (padTop || padRight || padBottom || padLeft) {
+      const dim = 'rgba(0, 0, 0, 0.45)';
+      // top
+      if (padTopS > 0) svgLines.push(`<rect x="0" y="0" width="${previewWidth}" height="${padTopS}" fill="${dim}"/>`);
+      // bottom
+      const bottomY = padTopS + effectiveHeightS;
+      if (padBottom > 0) svgLines.push(`<rect x="0" y="${bottomY}" width="${previewWidth}" height="${previewHeight - bottomY}" fill="${dim}"/>`);
+      // left
+      if (padLeftS > 0) svgLines.push(`<rect x="0" y="${padTopS}" width="${padLeftS}" height="${effectiveHeightS}" fill="${dim}"/>`);
+      // right
+      const rightX = padLeftS + effectiveWidthS;
+      if (padRight > 0) svgLines.push(`<rect x="${rightX}" y="${padTopS}" width="${previewWidth - rightX}" height="${effectiveHeightS}" fill="${dim}"/>`);
+      // grid bounds outline
+      svgLines.push(`<rect x="${padLeftS}" y="${padTopS}" width="${effectiveWidthS}" height="${effectiveHeightS}" fill="none" stroke="rgba(74, 222, 128, 0.9)" stroke-width="2"/>`);
     }
 
-    // Horizontal lines
-    for (let i = 1; i < rows; i++) {
-      const y = Math.round(i * scaledFrameHeight);
-      svgLines.push(`<line x1="0" y1="${y}" x2="${previewWidth}" y2="${y}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+    if (effectiveWidthS > 0 && effectiveHeightS > 0) {
+      const gridRight = padLeftS + effectiveWidthS;
+      const gridBottom = padTopS + effectiveHeightS;
+      // Vertical lines
+      for (let i = 1; i < columns; i++) {
+        const x = padLeftS + i * scaledFrameWidth;
+        svgLines.push(`<line x1="${x}" y1="${padTopS}" x2="${x}" y2="${gridBottom}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+      }
+      // Horizontal lines
+      for (let i = 1; i < rows; i++) {
+        const y = padTopS + i * scaledFrameHeight;
+        svgLines.push(`<line x1="${padLeftS}" y1="${y}" x2="${gridRight}" y2="${y}" stroke="rgba(255,0,100,0.8)" stroke-width="2"/>`);
+      }
     }
 
     const svgOverlay = Buffer.from(
@@ -335,7 +407,9 @@ ipcMain.handle('generate-preview', async (event, options) => {
       preview: `data:image/png;base64,${composited.toString('base64')}`,
       frameWidth,
       frameHeight,
-      totalFrames: columns * rows
+      totalFrames: columns * rows,
+      effectiveWidth,
+      effectiveHeight
     };
   } catch (error) {
     throw new Error(`Failed to generate preview: ${error.message}`);
@@ -346,6 +420,65 @@ ipcMain.handle('generate-preview', async (event, options) => {
 ipcMain.handle('open-folder', async (event, folderPath) => {
   const { shell } = require('electron');
   shell.openPath(folderPath);
+});
+
+// Batch resize images
+ipcMain.handle('batch-resize', async (event, options) => {
+  const { images, mode, ratioNumerator, ratioDenominator, fixedWidth, fixedHeight, outputFolder } = options;
+  const results = [];
+
+  for (const image of images) {
+    try {
+      const metadata = await sharp(image.path).metadata();
+      const origW = metadata.width;
+      const origH = metadata.height;
+      let outW;
+      let outH;
+
+      if (mode === 'ratio') {
+        const num = Math.max(1, ratioNumerator || 1);
+        const den = Math.max(1, ratioDenominator || 1);
+        outW = Math.max(1, Math.round((origW * num) / den));
+        outH = Math.max(1, Math.round((origH * num) / den));
+      } else if (mode === 'fixedWidth') {
+        const targetW = Math.max(1, fixedWidth || 1);
+        outW = targetW;
+        outH = Math.max(1, Math.round((origH * targetW) / origW));
+      } else if (mode === 'fixedHeight') {
+        const targetH = Math.max(1, fixedHeight || 1);
+        outH = targetH;
+        outW = Math.max(1, Math.round((origW * targetH) / origH));
+      } else {
+        throw new Error(`Unknown resize mode: ${mode}`);
+      }
+
+      const outputPath = path.join(outputFolder, image.name);
+
+      // Buffer first so output can safely overwrite input.
+      const buffer = await sharp(image.path)
+        .resize(outW, outH, { fit: 'fill', kernel: sharp.kernel.lanczos3 })
+        .toBuffer();
+      await fs.promises.writeFile(outputPath, buffer);
+
+      results.push({
+        fileName: image.name,
+        success: true,
+        originalWidth: origW,
+        originalHeight: origH,
+        outputWidth: outW,
+        outputHeight: outH,
+        outputPath
+      });
+    } catch (error) {
+      results.push({
+        fileName: image.name,
+        success: false,
+        error: error.message
+      });
+    }
+  }
+
+  return results;
 });
 
 // =============================================

@@ -53,7 +53,22 @@ const state = {
     sourceImagePath: null
   },
   // Per-image frame offsets: { [imagePath]: { [frameIndex]: { dx, dy } } }
-  frameOffsets: {}
+  frameOffsets: {},
+  // Image padding (signed): positive extends canvas, negative crops it
+  padding: { top: 0, right: 0, bottom: 0, left: 0 },
+  // Image position offset on the padded canvas (set via arrow keys in Preview Grid)
+  imageOffset: { x: 0, y: 0 },
+  // Cache of full-resolution HTMLImageElement for the currently-shown image
+  previewImageCache: null, // { path, image }
+  // Resize feature
+  resize: {
+    mode: 'ratio', // 'ratio' | 'fixedWidth' | 'fixedHeight'
+    ratioNum: 1,
+    ratioDen: 2,
+    fixedWidth: 128,
+    fixedHeight: 128,
+    outputFolder: null
+  }
 };
 
 // DOM Elements
@@ -64,6 +79,10 @@ const elements = {
   columns: document.getElementById('columns'),
   rows: document.getElementById('rows'),
   totalFrames: document.getElementById('totalFrames'),
+  padTop: document.getElementById('padTop'),
+  padRight: document.getElementById('padRight'),
+  padBottom: document.getElementById('padBottom'),
+  padLeft: document.getElementById('padLeft'),
   baseName: document.getElementById('baseName'),
   baseNameGroup: document.getElementById('baseNameGroup'),
   perFileNumbering: document.getElementById('perFileNumbering'),
@@ -91,7 +110,29 @@ const elements = {
   // Mode tabs
   modeSlice: document.getElementById('modeSlice'),
   modeTilemap: document.getElementById('modeTilemap'),
+  modeResize: document.getElementById('modeResize'),
   mainContent: document.querySelector('.main-content'),
+  sliceSettings: document.getElementById('sliceSettings'),
+  resizeSettings: document.getElementById('resizeSettings'),
+  // Resize mode controls
+  resizeModeContent: document.getElementById('resizeModeContent'),
+  resizePreviewContainer: document.getElementById('resizePreviewContainer'),
+  resizePreviewInfo: document.getElementById('resizePreviewInfo'),
+  resizeBatchSummary: document.getElementById('resizeBatchSummary'),
+  resizeModeRatio: document.getElementById('resizeModeRatio'),
+  resizeModeFixedWidth: document.getElementById('resizeModeFixedWidth'),
+  resizeModeFixedHeight: document.getElementById('resizeModeFixedHeight'),
+  resizeRatioGroup: document.getElementById('resizeRatioGroup'),
+  resizeFixedWidthGroup: document.getElementById('resizeFixedWidthGroup'),
+  resizeFixedHeightGroup: document.getElementById('resizeFixedHeightGroup'),
+  ratioPresets: document.getElementById('ratioPresets'),
+  ratioNum: document.getElementById('ratioNum'),
+  ratioDen: document.getElementById('ratioDen'),
+  resizeFixedWidth: document.getElementById('resizeFixedWidth'),
+  resizeFixedHeight: document.getElementById('resizeFixedHeight'),
+  resizeOutputFolderBtn: document.getElementById('resizeOutputFolderBtn'),
+  resizeOutputPath: document.getElementById('resizeOutputPath'),
+  resizeBtn: document.getElementById('resizeBtn'),
   // Slice mode content
   sliceModeContent: document.getElementById('sliceModeContent'),
   sliceToPaletteBtn: document.getElementById('sliceToPaletteBtn'),
@@ -128,6 +169,7 @@ const elements = {
 function init() {
   setupEventListeners();
   updateUI();
+  syncRatioPresetActive();
 }
 
 // Event Listeners
@@ -139,6 +181,10 @@ function setupEventListeners() {
   elements.sliceBtn.addEventListener('click', handleSlice);
   elements.columns.addEventListener('input', handleGridInputChange);
   elements.rows.addEventListener('input', handleGridInputChange);
+  elements.padTop.addEventListener('input', handlePaddingInputChange);
+  elements.padRight.addEventListener('input', handlePaddingInputChange);
+  elements.padBottom.addEventListener('input', handlePaddingInputChange);
+  elements.padLeft.addEventListener('input', handlePaddingInputChange);
   elements.openFolderBtn.addEventListener('click', handleOpenFolder);
   elements.closeResultBtn.addEventListener('click', () => {
     elements.resultModal.classList.add('hidden');
@@ -167,6 +213,7 @@ function setupEventListeners() {
   elements.previewContainer.addEventListener('click', handlePreviewContainerClick);
   window.addEventListener('resize', () => {
     if (state.framePreview.active) updateFramePreviewSize();
+    else if (elements.previewContainer.classList.contains('zoomable')) renderGridPreview();
   });
 
   // Mouse wheel zoom
@@ -175,6 +222,33 @@ function setupEventListeners() {
   // Mode tabs
   elements.modeSlice.addEventListener('click', () => handleModeChange('slice'));
   elements.modeTilemap.addEventListener('click', () => handleModeChange('tilemap'));
+  elements.modeResize.addEventListener('click', () => handleModeChange('resize'));
+
+  // Resize feature
+  elements.resizeModeRatio.addEventListener('change', () => handleResizeModeChange('ratio'));
+  elements.resizeModeFixedWidth.addEventListener('change', () => handleResizeModeChange('fixedWidth'));
+  elements.resizeModeFixedHeight.addEventListener('change', () => handleResizeModeChange('fixedHeight'));
+  elements.ratioPresets.addEventListener('click', handleRatioPresetClick);
+  elements.ratioNum.addEventListener('input', () => {
+    state.resize.ratioNum = Math.max(1, parseInt(elements.ratioNum.value) || 1);
+    syncRatioPresetActive();
+    refreshResizePreview();
+  });
+  elements.ratioDen.addEventListener('input', () => {
+    state.resize.ratioDen = Math.max(1, parseInt(elements.ratioDen.value) || 1);
+    syncRatioPresetActive();
+    refreshResizePreview();
+  });
+  elements.resizeFixedWidth.addEventListener('input', () => {
+    state.resize.fixedWidth = Math.max(1, parseInt(elements.resizeFixedWidth.value) || 1);
+    refreshResizePreview();
+  });
+  elements.resizeFixedHeight.addEventListener('input', () => {
+    state.resize.fixedHeight = Math.max(1, parseInt(elements.resizeFixedHeight.value) || 1);
+    refreshResizePreview();
+  });
+  elements.resizeOutputFolderBtn.addEventListener('click', handleResizeOutputFolder);
+  elements.resizeBtn.addEventListener('click', handleResize);
 
   // Tilemap feature
   elements.sliceToPaletteBtn.addEventListener('click', handleSliceToPalette);
@@ -297,9 +371,7 @@ async function addImages(filePaths) {
   }
 
   updateUI();
-  if (state.selectedImageIndex >= 0) {
-    showImagePreview(state.images[state.selectedImageIndex]);
-  }
+  showSelectedImagePreview();
 }
 
 async function handleSelectOutput() {
@@ -323,18 +395,92 @@ function handleGridInputChange() {
 }
 
 function invalidateFrameOffsets() {
-  const hasOffsets = Object.keys(state.frameOffsets).length > 0;
-  if (state.framePreview.active) {
-    exitFramePreview();
-    if (state.selectedImageIndex >= 0) {
-      showImagePreview(state.images[state.selectedImageIndex]);
-    } else {
-      resetPreview();
-    }
-  }
-  if (hasOffsets) {
+  if (Object.keys(state.frameOffsets).length > 0) {
     state.frameOffsets = {};
   }
+  if (state.framePreview.active) {
+    // Re-init frame preview so columns/rows changes are picked up.
+    handleFramePreview();
+  } else if (elements.previewContainer.classList.contains('zoomable')) {
+    renderGridPreview();
+  }
+}
+
+function handlePaddingInputChange() {
+  state.padding.top = parseInt(elements.padTop.value) || 0;
+  state.padding.right = parseInt(elements.padRight.value) || 0;
+  state.padding.bottom = parseInt(elements.padBottom.value) || 0;
+  state.padding.left = parseInt(elements.padLeft.value) || 0;
+  applyPaddingChange();
+}
+
+function syncPaddingInputs() {
+  elements.padTop.value = state.padding.top;
+  elements.padRight.value = state.padding.right;
+  elements.padBottom.value = state.padding.bottom;
+  elements.padLeft.value = state.padding.left;
+}
+
+function applyPaddingChange() {
+  // Padding changes shift frame boundaries — drop per-frame offsets so they don't misalign.
+  if (Object.keys(state.frameOffsets).length > 0) {
+    state.frameOffsets = {};
+  }
+  refreshActivePreview();
+}
+
+function refreshActivePreview() {
+  if (state.framePreview.active) {
+    refreshFramePreviewDims();
+  } else if (elements.previewContainer.classList.contains('zoomable')) {
+    renderGridPreview();
+  }
+}
+
+function refreshFramePreviewDims() {
+  const fp = state.framePreview;
+  if (!fp.active || !fp.sourceImage) return;
+
+  const imgW = fp.sourceImage.naturalWidth;
+  const imgH = fp.sourceImage.naturalHeight;
+  const padTop = state.padding.top;
+  const padRight = state.padding.right;
+  const padBottom = state.padding.bottom;
+  const padLeft = state.padding.left;
+  const offsetX = state.imageOffset.x;
+  const offsetY = state.imageOffset.y;
+
+  const canvasW = Math.max(0, imgW + padLeft + padRight);
+  const canvasH = Math.max(0, imgH + padTop + padBottom);
+  fp.imageX = padLeft + offsetX;
+  fp.imageY = padTop + offsetY;
+  fp.frameWidth = fp.columns > 0 ? Math.floor(canvasW / fp.columns) : 0;
+  fp.frameHeight = fp.rows > 0 ? Math.floor(canvasH / fp.rows) : 0;
+
+  const canvas = elements.previewContainer.querySelector('.frame-preview-canvas');
+  if (canvas) {
+    canvas.width = Math.max(1, fp.frameWidth);
+    canvas.height = Math.max(1, fp.frameHeight);
+    updateFramePreviewSize();
+  }
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+async function ensureImageCache(imagePath) {
+  if (state.previewImageCache && state.previewImageCache.path === imagePath) {
+    return state.previewImageCache.image;
+  }
+  const result = await window.electronAPI.getImageDataUrl(imagePath);
+  return await new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      state.previewImageCache = { path: imagePath, image: img };
+      resolve(img);
+    };
+    img.onerror = () => reject(new Error('Failed to load image data'));
+    img.src = result.dataUrl;
+  });
 }
 
 function handleNumberingModeChange() {
@@ -425,43 +571,114 @@ function handlePanEnd() {
   elements.previewContainer.classList.remove('dragging');
 }
 
-async function handlePreview() {
+async function handlePreview(opts = {}) {
+  const { preserveZoom = false } = opts;
   if (state.selectedImageIndex < 0) return;
 
   exitFramePreview();
 
   const image = state.images[state.selectedImageIndex];
-  const columns = parseInt(elements.columns.value) || 1;
-  const rows = parseInt(elements.rows.value) || 1;
 
   try {
-    const result = await window.electronAPI.generatePreview({
-      imagePath: image.path,
-      columns,
-      rows
-    });
+    await ensureImageCache(image.path);
 
-    // Reset zoom state
-    state.zoom.scale = 1;
-    state.zoom.panX = 0;
-    state.zoom.panY = 0;
+    if (!preserveZoom) {
+      state.zoom.scale = 1;
+      state.zoom.panX = 0;
+      state.zoom.panY = 0;
+    }
 
-    elements.previewContainer.innerHTML = `
-      <div class="preview-wrapper">
-        <img src="${result.preview}" alt="Preview">
-      </div>
-    `;
+    let canvas = elements.previewContainer.querySelector('.grid-preview-canvas');
+    if (!canvas) {
+      elements.previewContainer.innerHTML = `
+        <div class="preview-wrapper">
+          <canvas class="grid-preview-canvas"></canvas>
+        </div>
+      `;
+    }
     elements.previewContainer.classList.add('zoomable');
     elements.zoomControls.classList.remove('hidden');
     updateZoomLevel();
+    if (!preserveZoom) updatePreviewTransform();
 
-    elements.previewInfo.innerHTML = `
-      Frame size: <span>${result.frameWidth} x ${result.frameHeight}</span> pixels |
-      Total frames: <span>${result.totalFrames}</span>
-    `;
+    renderGridPreview();
   } catch (error) {
     console.error('Preview failed:', error);
   }
+}
+
+function renderGridPreview() {
+  const cache = state.previewImageCache;
+  if (!cache) return;
+  const canvas = elements.previewContainer.querySelector('.grid-preview-canvas');
+  if (!canvas) return;
+
+  const sourceImg = cache.image;
+  const imgW = sourceImg.naturalWidth;
+  const imgH = sourceImg.naturalHeight;
+
+  const cols = parseInt(elements.columns.value) || 1;
+  const rows = parseInt(elements.rows.value) || 1;
+  const { top: padTop, right: padRight, bottom: padBottom, left: padLeft } = state.padding;
+  const { x: offsetX, y: offsetY } = state.imageOffset;
+
+  const canvasW = Math.max(1, imgW + padLeft + padRight);
+  const canvasH = Math.max(1, imgH + padTop + padBottom);
+  const imageX = padLeft + offsetX;
+  const imageY = padTop + offsetY;
+
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+
+  // Display size: fit container while preserving aspect ratio (transform handles further zoom).
+  const containerRect = elements.previewContainer.getBoundingClientRect();
+  const maxW = Math.max(containerRect.width - 40, 100);
+  const maxH = Math.max(containerRect.height - 40, 100);
+  const fitScale = Math.min(maxW / canvasW, maxH / canvasH, 1);
+  canvas.style.width = `${canvasW * fitScale}px`;
+  canvas.style.height = `${canvasH * fitScale}px`;
+
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.drawImage(sourceImg, imageX, imageY);
+
+  const frameW = canvasW / cols;
+  const frameH = canvasH / rows;
+  // Use canvas-pixel line widths; CSS scaling will preserve apparent width.
+  const lineW = Math.max(1, Math.round(2 / Math.max(fitScale, 0.05)));
+
+  ctx.strokeStyle = 'rgba(255, 0, 100, 0.85)';
+  ctx.lineWidth = lineW;
+  for (let i = 1; i < cols; i++) {
+    const x = Math.round(i * frameW) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvasH);
+    ctx.stroke();
+  }
+  for (let i = 1; i < rows; i++) {
+    const y = Math.round(i * frameH) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvasW, y);
+    ctx.stroke();
+  }
+  // Outer canvas bounds (green).
+  ctx.strokeStyle = 'rgba(74, 222, 128, 0.95)';
+  ctx.lineWidth = lineW;
+  ctx.strokeRect(0.5, 0.5, canvasW - 1, canvasH - 1);
+
+  const p = state.padding;
+  const o = state.imageOffset;
+  elements.previewInfo.innerHTML = `
+    Canvas: <span>${canvasW} x ${canvasH}</span> px |
+    Frame size: <span>${Math.floor(canvasW / cols)} x ${Math.floor(canvasH / rows)}</span> px |
+    Total frames: <span>${cols * rows}</span> |
+    Padding: <span>T${p.top} R${p.right} B${p.bottom} L${p.left}</span> |
+    Image offset: <span>(${o.x}, ${o.y})</span>
+    <div class="frame-preview-hint">Arrow keys nudge image position (Shift = 10px). Padding inputs accept negative values.</div>
+  `;
 }
 
 async function handleSlice() {
@@ -492,7 +709,9 @@ async function handleSlice() {
       outputFolder: state.outputFolder,
       baseName: baseName || null,
       useSequentialNumbering,
-      frameOffsetsByPath: state.frameOffsets
+      frameOffsetsByPath: state.frameOffsets,
+      padding: state.padding,
+      imageOffset: state.imageOffset
     });
 
     // Hide progress modal
@@ -543,8 +762,9 @@ function showResults(results) {
 }
 
 function handleOpenFolder() {
-  if (state.outputFolder) {
-    window.electronAPI.openFolder(state.outputFolder);
+  const folder = state.mode === 'resize' ? state.resize.outputFolder : state.outputFolder;
+  if (folder) {
+    window.electronAPI.openFolder(folder);
   }
 }
 
@@ -566,7 +786,7 @@ function updateUI() {
         const index = parseInt(item.dataset.index);
         state.selectedImageIndex = index;
         updateUI();
-        showImagePreview(state.images[index]);
+        showSelectedImagePreview();
       }
     });
   });
@@ -578,16 +798,15 @@ function updateUI() {
       const index = parseInt(btn.dataset.index);
       const removedPath = state.images[index].path;
       delete state.frameOffsets[removedPath];
+      if (state.previewImageCache && state.previewImageCache.path === removedPath) {
+        state.previewImageCache = null;
+      }
       state.images.splice(index, 1);
       if (state.selectedImageIndex >= state.images.length) {
         state.selectedImageIndex = state.images.length - 1;
       }
       updateUI();
-      if (state.selectedImageIndex >= 0) {
-        showImagePreview(state.images[state.selectedImageIndex]);
-      } else {
-        resetPreview();
-      }
+      showSelectedImagePreview();
     });
   });
 
@@ -599,6 +818,7 @@ function updateUI() {
   elements.framePreviewBtn.disabled = !hasImages;
   elements.sliceBtn.disabled = !hasImages || !hasOutput;
   elements.sliceToPaletteBtn.disabled = !hasImages;
+  elements.resizeBtn.disabled = !hasImages || !state.resize.outputFolder;
 
   // Update total frames
   handleGridChange();
@@ -629,6 +849,230 @@ function resetPreview() {
   elements.previewInfo.innerHTML = '';
 }
 
+function showSelectedImagePreview() {
+  if (state.mode === 'resize') {
+    refreshResizePreview();
+    return;
+  }
+  if (state.mode === 'tilemap') return;
+  if (state.selectedImageIndex < 0) {
+    resetPreview();
+    return;
+  }
+  showImagePreview(state.images[state.selectedImageIndex]);
+}
+
+// =============================================
+// Resize Feature
+// =============================================
+
+function handleResizeModeChange(mode) {
+  state.resize.mode = mode;
+  elements.resizeRatioGroup.classList.toggle('hidden', mode !== 'ratio');
+  elements.resizeFixedWidthGroup.classList.toggle('hidden', mode !== 'fixedWidth');
+  elements.resizeFixedHeightGroup.classList.toggle('hidden', mode !== 'fixedHeight');
+  refreshResizePreview();
+}
+
+function handleRatioPresetClick(e) {
+  const btn = e.target.closest('.ratio-preset-btn');
+  if (!btn) return;
+  const num = parseInt(btn.dataset.num, 10);
+  const den = parseInt(btn.dataset.den, 10);
+  if (!num || !den) return;
+  state.resize.ratioNum = num;
+  state.resize.ratioDen = den;
+  elements.ratioNum.value = num;
+  elements.ratioDen.value = den;
+  syncRatioPresetActive();
+  refreshResizePreview();
+}
+
+function syncRatioPresetActive() {
+  const { ratioNum, ratioDen } = state.resize;
+  elements.ratioPresets.querySelectorAll('.ratio-preset-btn').forEach(btn => {
+    const matches = parseInt(btn.dataset.num, 10) === ratioNum && parseInt(btn.dataset.den, 10) === ratioDen;
+    btn.classList.toggle('active', matches);
+  });
+}
+
+async function handleResizeOutputFolder() {
+  const folderPath = await window.electronAPI.selectOutputFolder();
+  if (folderPath) {
+    state.resize.outputFolder = folderPath;
+    elements.resizeOutputPath.textContent = folderPath;
+    updateUI();
+  }
+}
+
+function computeResizeDimensions(origW, origH) {
+  const r = state.resize;
+  if (r.mode === 'ratio') {
+    const num = Math.max(1, r.ratioNum);
+    const den = Math.max(1, r.ratioDen);
+    return {
+      w: Math.max(1, Math.round((origW * num) / den)),
+      h: Math.max(1, Math.round((origH * num) / den))
+    };
+  }
+  if (r.mode === 'fixedWidth') {
+    const targetW = Math.max(1, r.fixedWidth);
+    return {
+      w: targetW,
+      h: Math.max(1, Math.round((origH * targetW) / origW))
+    };
+  }
+  // fixedHeight
+  const targetH = Math.max(1, r.fixedHeight);
+  return {
+    w: Math.max(1, Math.round((origW * targetH) / origH)),
+    h: targetH
+  };
+}
+
+function refreshResizePreview() {
+  if (state.mode !== 'resize') return;
+
+  if (state.images.length === 0) {
+    resetResizePreview();
+    return;
+  }
+
+  const idx = state.selectedImageIndex >= 0 ? state.selectedImageIndex : 0;
+  const image = state.images[idx];
+  if (!image) {
+    resetResizePreview();
+    return;
+  }
+
+  elements.resizePreviewContainer.innerHTML = `<img src="${image.preview}" alt="${image.name}">`;
+
+  const out = computeResizeDimensions(image.width, image.height);
+  const ratioLabel = describeResizeMode();
+  elements.resizePreviewInfo.innerHTML = `
+    <strong>${image.name}</strong><br>
+    Original: <span>${image.width} x ${image.height}</span> px |
+    Output: <span>${out.w} x ${out.h}</span> px |
+    Mode: <span>${ratioLabel}</span>
+  `;
+
+  updateResizeBatchSummary();
+}
+
+function resetResizePreview() {
+  elements.resizePreviewContainer.innerHTML = `
+    <div class="preview-placeholder">
+      <div class="placeholder-icon">📐</div>
+      <p>Select an image to preview</p>
+    </div>
+  `;
+  elements.resizePreviewInfo.innerHTML = '';
+  elements.resizeBatchSummary.innerHTML = '';
+}
+
+function describeResizeMode() {
+  const r = state.resize;
+  if (r.mode === 'ratio') return `Ratio ${r.ratioNum}/${r.ratioDen}`;
+  if (r.mode === 'fixedWidth') return `Fixed width ${r.fixedWidth}px`;
+  return `Fixed height ${r.fixedHeight}px`;
+}
+
+function updateResizeBatchSummary() {
+  if (state.images.length === 0) {
+    elements.resizeBatchSummary.innerHTML = '';
+    return;
+  }
+  const rowsHtml = state.images.map((img, idx) => {
+    const out = computeResizeDimensions(img.width, img.height);
+    const sel = idx === state.selectedImageIndex ? 'selected' : '';
+    return `
+      <div class="resize-row ${sel}" data-index="${idx}" title="${img.name}">
+        <span class="resize-row-name">${img.name}</span>
+        <span class="resize-row-dims">${img.width}x${img.height} → <strong>${out.w}x${out.h}</strong></span>
+      </div>
+    `;
+  }).join('');
+  elements.resizeBatchSummary.innerHTML = rowsHtml;
+  elements.resizeBatchSummary.querySelectorAll('.resize-row').forEach(row => {
+    row.addEventListener('click', () => {
+      state.selectedImageIndex = parseInt(row.dataset.index, 10);
+      updateUI();
+      refreshResizePreview();
+    });
+  });
+}
+
+async function handleResize() {
+  if (state.images.length === 0 || !state.resize.outputFolder) return;
+
+  // Validate inputs
+  if (state.resize.mode === 'ratio' && (state.resize.ratioNum < 1 || state.resize.ratioDen < 1)) {
+    alert('Ratio numerator and denominator must be at least 1.');
+    return;
+  }
+  if (state.resize.mode === 'fixedWidth' && state.resize.fixedWidth < 1) {
+    alert('Target width must be at least 1.');
+    return;
+  }
+  if (state.resize.mode === 'fixedHeight' && state.resize.fixedHeight < 1) {
+    alert('Target height must be at least 1.');
+    return;
+  }
+
+  elements.progressModal.classList.remove('hidden');
+  elements.progressFill.style.width = '0%';
+  elements.progressText.textContent = `Resizing 0 / ${state.images.length}...`;
+
+  try {
+    const results = await window.electronAPI.batchResize({
+      images: state.images.map(img => ({ path: img.path, name: img.name })),
+      mode: state.resize.mode,
+      ratioNumerator: state.resize.ratioNum,
+      ratioDenominator: state.resize.ratioDen,
+      fixedWidth: state.resize.fixedWidth,
+      fixedHeight: state.resize.fixedHeight,
+      outputFolder: state.resize.outputFolder
+    });
+
+    elements.progressModal.classList.add('hidden');
+    showResizeResults(results);
+  } catch (error) {
+    elements.progressModal.classList.add('hidden');
+    alert(`Resize failed: ${error.message}`);
+  }
+}
+
+function showResizeResults(results) {
+  let successCount = 0;
+  const summaryHTML = results.map(result => {
+    if (result.success) {
+      successCount++;
+      return `
+        <div class="result-item success">
+          <span class="result-item-icon">✓</span>
+          <div class="result-item-text">
+            <div class="result-item-name">${result.fileName}</div>
+            <div class="result-item-detail">${result.originalWidth}x${result.originalHeight} → ${result.outputWidth}x${result.outputHeight}</div>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="result-item error">
+        <span class="result-item-icon">✗</span>
+        <div class="result-item-text">
+          <div class="result-item-name">${result.fileName}</div>
+          <div class="result-item-detail">${result.error}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  elements.resultTitle.textContent = `Resized ${successCount} / ${results.length} images`;
+  elements.resultSummary.innerHTML = summaryHTML;
+  elements.resultModal.classList.remove('hidden');
+}
+
 // =============================================
 // Frame Preview Feature
 // =============================================
@@ -643,32 +1087,43 @@ async function handleFramePreview() {
   if (columns < 1 || rows < 1) return;
 
   try {
-    const result = await window.electronAPI.getImageDataUrl(image.path);
+    const sourceImg = await ensureImageCache(image.path);
 
-    await new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const frameWidth = Math.floor(img.naturalWidth / columns);
-        const frameHeight = Math.floor(img.naturalHeight / rows);
+    const padTop = state.padding.top;
+    const padRight = state.padding.right;
+    const padBottom = state.padding.bottom;
+    const padLeft = state.padding.left;
+    const offsetX = state.imageOffset.x;
+    const offsetY = state.imageOffset.y;
 
-        state.framePreview = {
-          active: true,
-          currentFrameIndex: 0,
-          totalFrames: columns * rows,
-          columns,
-          rows,
-          frameWidth,
-          frameHeight,
-          sourceImage: img,
-          sourceImagePath: image.path
-        };
+    const imgW = sourceImg.naturalWidth;
+    const imgH = sourceImg.naturalHeight;
+    const canvasW = Math.max(0, imgW + padLeft + padRight);
+    const canvasH = Math.max(0, imgH + padTop + padBottom);
+    const imageX = padLeft + offsetX;
+    const imageY = padTop + offsetY;
+    const frameWidth = Math.floor(canvasW / columns);
+    const frameHeight = Math.floor(canvasH / rows);
 
-        showFramePreview();
-        resolve();
-      };
-      img.onerror = () => reject(new Error('Failed to load image data'));
-      img.src = result.dataUrl;
-    });
+    const prevIndex = state.framePreview.active && state.framePreview.sourceImagePath === image.path
+      ? Math.min(state.framePreview.currentFrameIndex, columns * rows - 1)
+      : 0;
+
+    state.framePreview = {
+      active: true,
+      currentFrameIndex: Math.max(0, prevIndex),
+      totalFrames: columns * rows,
+      columns,
+      rows,
+      frameWidth,
+      frameHeight,
+      imageX,
+      imageY,
+      sourceImage: sourceImg,
+      sourceImagePath: image.path
+    };
+
+    showFramePreview();
   } catch (error) {
     console.error('Frame preview failed:', error);
     alert(`Frame preview failed: ${error.message}`);
@@ -743,31 +1198,52 @@ function renderCurrentFrame() {
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
 
-  const { columns, frameWidth, frameHeight, currentFrameIndex } = fp;
+  const { columns, frameWidth, frameHeight, currentFrameIndex, imageX = 0, imageY = 0 } = fp;
+  if (frameWidth <= 0 || frameHeight <= 0) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
   const col = currentFrameIndex % columns;
   const row = Math.floor(currentFrameIndex / columns);
   const offset = getFrameOffset(fp.sourceImagePath, currentFrameIndex);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  const cropLeft = Math.max(0, -offset.dx);
-  const cropTop = Math.max(0, -offset.dy);
-  const cropW = frameWidth - Math.abs(offset.dx);
-  const cropH = frameHeight - Math.abs(offset.dy);
-  const destX = Math.max(0, offset.dx);
-  const destY = Math.max(0, offset.dy);
+  // Frame's region on the virtual canvas.
+  const frameCanvasX = col * frameWidth;
+  const frameCanvasY = row * frameHeight;
+  // Map to image-relative coords.
+  const imgRelX = frameCanvasX - imageX;
+  const imgRelY = frameCanvasY - imageY;
 
-  if (cropW > 0 && cropH > 0) {
+  const imgW = fp.sourceImage.naturalWidth;
+  const imgH = fp.sourceImage.naturalHeight;
+  const srcL = Math.max(0, imgRelX);
+  const srcT = Math.max(0, imgRelY);
+  const srcR = Math.min(imgW, imgRelX + frameWidth);
+  const srcB = Math.min(imgH, imgRelY + frameHeight);
+  const srcW = srcR - srcL;
+  const srcH = srcB - srcT;
+
+  const baseDestX = srcL - imgRelX;
+  const baseDestY = srcT - imgRelY;
+  const finalDestX = baseDestX + offset.dx;
+  const finalDestY = baseDestY + offset.dy;
+
+  const placeL = Math.max(0, finalDestX);
+  const placeT = Math.max(0, finalDestY);
+  const placeR = Math.min(frameWidth, finalDestX + srcW);
+  const placeB = Math.min(frameHeight, finalDestY + srcH);
+
+  if (srcW > 0 && srcH > 0 && placeR > placeL && placeB > placeT) {
+    const finalSrcL = srcL + (placeL - finalDestX);
+    const finalSrcT = srcT + (placeT - finalDestY);
+    const finalSrcW = placeR - placeL;
+    const finalSrcH = placeB - placeT;
     ctx.drawImage(
       fp.sourceImage,
-      col * frameWidth + cropLeft,
-      row * frameHeight + cropTop,
-      cropW,
-      cropH,
-      destX,
-      destY,
-      cropW,
-      cropH
+      finalSrcL, finalSrcT, finalSrcW, finalSrcH,
+      placeL, placeT, finalSrcW, finalSrcH
     );
   }
 }
@@ -886,17 +1362,25 @@ function handleModeChange(mode) {
   // Update tab active state
   elements.modeSlice.classList.toggle('active', mode === 'slice');
   elements.modeTilemap.classList.toggle('active', mode === 'tilemap');
+  elements.modeResize.classList.toggle('active', mode === 'resize');
 
-  // Toggle panel visibility
+  // Toggle right-side panels
   elements.sliceModeContent.classList.toggle('hidden', mode !== 'slice');
   elements.tilemapModeContent.classList.toggle('hidden', mode !== 'tilemap');
+  elements.resizeModeContent.classList.toggle('hidden', mode !== 'resize');
   elements.palettePanel.classList.toggle('hidden', mode !== 'tilemap');
   elements.mainContent.classList.toggle('tilemap-mode', mode === 'tilemap');
+
+  // Toggle settings-panel groups
+  elements.sliceSettings.classList.toggle('hidden', mode === 'resize');
+  elements.resizeSettings.classList.toggle('hidden', mode !== 'resize');
 
   if (mode === 'tilemap') {
     initTilemapCanvas();
     renderTilePalette();
     updateTilemapInfo();
+  } else if (mode === 'resize') {
+    refreshResizePreview();
   }
 }
 
@@ -1490,6 +1974,28 @@ function handleKeyDown(e) {
 
     e.preventDefault();
     nudgeFrameOffset(dx, dy);
+    return;
+  }
+
+  // Grid preview keyboard controls: nudge image position (not padding)
+  if (state.mode === 'slice' && elements.previewContainer.classList.contains('zoomable')) {
+    const step = e.shiftKey ? 10 : 1;
+    let dx = 0;
+    let dy = 0;
+    if (e.code === 'ArrowLeft') dx = -step;
+    else if (e.code === 'ArrowRight') dx = step;
+    else if (e.code === 'ArrowUp') dy = -step;
+    else if (e.code === 'ArrowDown') dy = step;
+    else return;
+
+    e.preventDefault();
+    state.imageOffset.x += dx;
+    state.imageOffset.y += dy;
+    // Image moved → per-frame offsets no longer match their original frame contents.
+    if (Object.keys(state.frameOffsets).length > 0) {
+      state.frameOffsets = {};
+    }
+    refreshActivePreview();
   }
 }
 
