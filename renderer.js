@@ -39,7 +39,21 @@ const state = {
     },
     isPanMode: false,
     backgroundImage: null // { dataUrl, width, height }
-  }
+  },
+  // Frame Preview feature
+  framePreview: {
+    active: false,
+    currentFrameIndex: 0,
+    totalFrames: 0,
+    columns: 0,
+    rows: 0,
+    frameWidth: 0,
+    frameHeight: 0,
+    sourceImage: null,
+    sourceImagePath: null
+  },
+  // Per-image frame offsets: { [imagePath]: { [frameIndex]: { dx, dy } } }
+  frameOffsets: {}
 };
 
 // DOM Elements
@@ -57,6 +71,7 @@ const elements = {
   selectOutputBtn: document.getElementById('selectOutputBtn'),
   outputPath: document.getElementById('outputPath'),
   previewBtn: document.getElementById('previewBtn'),
+  framePreviewBtn: document.getElementById('framePreviewBtn'),
   sliceBtn: document.getElementById('sliceBtn'),
   previewContainer: document.getElementById('previewContainer'),
   previewInfo: document.getElementById('previewInfo'),
@@ -120,9 +135,10 @@ function setupEventListeners() {
   elements.selectImagesBtn.addEventListener('click', handleSelectImages);
   elements.selectOutputBtn.addEventListener('click', handleSelectOutput);
   elements.previewBtn.addEventListener('click', handlePreview);
+  elements.framePreviewBtn.addEventListener('click', handleFramePreview);
   elements.sliceBtn.addEventListener('click', handleSlice);
-  elements.columns.addEventListener('input', handleGridChange);
-  elements.rows.addEventListener('input', handleGridChange);
+  elements.columns.addEventListener('input', handleGridInputChange);
+  elements.rows.addEventListener('input', handleGridInputChange);
   elements.openFolderBtn.addEventListener('click', handleOpenFolder);
   elements.closeResultBtn.addEventListener('click', () => {
     elements.resultModal.classList.add('hidden');
@@ -146,6 +162,12 @@ function setupEventListeners() {
   elements.previewContainer.addEventListener('mousemove', handlePanMove);
   elements.previewContainer.addEventListener('mouseup', handlePanEnd);
   elements.previewContainer.addEventListener('mouseleave', handlePanEnd);
+
+  // Frame preview navigation by click
+  elements.previewContainer.addEventListener('click', handlePreviewContainerClick);
+  window.addEventListener('resize', () => {
+    if (state.framePreview.active) updateFramePreviewSize();
+  });
 
   // Mouse wheel zoom
   elements.previewContainer.addEventListener('wheel', handleWheelZoom);
@@ -295,6 +317,26 @@ function handleGridChange() {
   elements.totalFrames.textContent = cols * rows;
 }
 
+function handleGridInputChange() {
+  handleGridChange();
+  invalidateFrameOffsets();
+}
+
+function invalidateFrameOffsets() {
+  const hasOffsets = Object.keys(state.frameOffsets).length > 0;
+  if (state.framePreview.active) {
+    exitFramePreview();
+    if (state.selectedImageIndex >= 0) {
+      showImagePreview(state.images[state.selectedImageIndex]);
+    } else {
+      resetPreview();
+    }
+  }
+  if (hasOffsets) {
+    state.frameOffsets = {};
+  }
+}
+
 function handleNumberingModeChange() {
   const isSequential = elements.sequentialNumbering.checked;
   if (isSequential) {
@@ -386,6 +428,8 @@ function handlePanEnd() {
 async function handlePreview() {
   if (state.selectedImageIndex < 0) return;
 
+  exitFramePreview();
+
   const image = state.images[state.selectedImageIndex];
   const columns = parseInt(elements.columns.value) || 1;
   const rows = parseInt(elements.rows.value) || 1;
@@ -447,7 +491,8 @@ async function handleSlice() {
       rows,
       outputFolder: state.outputFolder,
       baseName: baseName || null,
-      useSequentialNumbering
+      useSequentialNumbering,
+      frameOffsetsByPath: state.frameOffsets
     });
 
     // Hide progress modal
@@ -531,6 +576,8 @@ function updateUI() {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const index = parseInt(btn.dataset.index);
+      const removedPath = state.images[index].path;
+      delete state.frameOffsets[removedPath];
       state.images.splice(index, 1);
       if (state.selectedImageIndex >= state.images.length) {
         state.selectedImageIndex = state.images.length - 1;
@@ -549,6 +596,7 @@ function updateUI() {
   const hasOutput = state.outputFolder !== null;
 
   elements.previewBtn.disabled = !hasImages;
+  elements.framePreviewBtn.disabled = !hasImages;
   elements.sliceBtn.disabled = !hasImages || !hasOutput;
   elements.sliceToPaletteBtn.disabled = !hasImages;
 
@@ -557,6 +605,7 @@ function updateUI() {
 }
 
 function showImagePreview(image) {
+  exitFramePreview();
   elements.previewContainer.innerHTML = `<img src="${image.preview}" alt="${image.name}">`;
   elements.previewContainer.classList.remove('zoomable');
   elements.zoomControls.classList.add('hidden');
@@ -568,6 +617,7 @@ function showImagePreview(image) {
 }
 
 function resetPreview() {
+  exitFramePreview();
   elements.previewContainer.innerHTML = `
     <div class="preview-placeholder">
       <div class="placeholder-icon">🖼️</div>
@@ -577,6 +627,252 @@ function resetPreview() {
   elements.previewContainer.classList.remove('zoomable');
   elements.zoomControls.classList.add('hidden');
   elements.previewInfo.innerHTML = '';
+}
+
+// =============================================
+// Frame Preview Feature
+// =============================================
+
+async function handleFramePreview() {
+  if (state.selectedImageIndex < 0) return;
+
+  const image = state.images[state.selectedImageIndex];
+  const columns = parseInt(elements.columns.value) || 1;
+  const rows = parseInt(elements.rows.value) || 1;
+
+  if (columns < 1 || rows < 1) return;
+
+  try {
+    const result = await window.electronAPI.getImageDataUrl(image.path);
+
+    await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const frameWidth = Math.floor(img.naturalWidth / columns);
+        const frameHeight = Math.floor(img.naturalHeight / rows);
+
+        state.framePreview = {
+          active: true,
+          currentFrameIndex: 0,
+          totalFrames: columns * rows,
+          columns,
+          rows,
+          frameWidth,
+          frameHeight,
+          sourceImage: img,
+          sourceImagePath: image.path
+        };
+
+        showFramePreview();
+        resolve();
+      };
+      img.onerror = () => reject(new Error('Failed to load image data'));
+      img.src = result.dataUrl;
+    });
+  } catch (error) {
+    console.error('Frame preview failed:', error);
+    alert(`Frame preview failed: ${error.message}`);
+  }
+}
+
+function showFramePreview() {
+  state.zoom.scale = 1;
+  state.zoom.panX = 0;
+  state.zoom.panY = 0;
+
+  elements.previewContainer.innerHTML = `
+    <div class="frame-preview-wrapper">
+      <button class="frame-nav-arrow frame-nav-prev" type="button" title="Previous frame">‹</button>
+      <canvas class="frame-preview-canvas"></canvas>
+      <button class="frame-nav-arrow frame-nav-next" type="button" title="Next frame">›</button>
+    </div>
+  `;
+  elements.previewContainer.classList.remove('zoomable');
+  elements.previewContainer.classList.add('frame-mode');
+  elements.zoomControls.classList.add('hidden');
+
+  const canvas = elements.previewContainer.querySelector('.frame-preview-canvas');
+  canvas.width = state.framePreview.frameWidth;
+  canvas.height = state.framePreview.frameHeight;
+
+  updateFramePreviewSize();
+
+  elements.previewContainer.querySelector('.frame-nav-prev').addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigateFrame(-1);
+  });
+  elements.previewContainer.querySelector('.frame-nav-next').addEventListener('click', (e) => {
+    e.stopPropagation();
+    navigateFrame(1);
+  });
+
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+function exitFramePreview() {
+  if (!state.framePreview.active) return;
+  state.framePreview.active = false;
+  state.framePreview.sourceImage = null;
+  elements.previewContainer.classList.remove('frame-mode');
+}
+
+function updateFramePreviewSize() {
+  const canvas = elements.previewContainer.querySelector('.frame-preview-canvas');
+  if (!canvas) return;
+
+  const containerRect = elements.previewContainer.getBoundingClientRect();
+  const maxW = Math.max(containerRect.width - 120, 64);
+  const maxH = Math.max(containerRect.height - 40, 64);
+  const { frameWidth, frameHeight } = state.framePreview;
+  if (frameWidth <= 0 || frameHeight <= 0) return;
+
+  const fitScale = Math.min(maxW / frameWidth, maxH / frameHeight);
+  const scale = fitScale >= 1 ? Math.max(1, Math.floor(fitScale)) : fitScale;
+  canvas.style.width = `${frameWidth * scale}px`;
+  canvas.style.height = `${frameHeight * scale}px`;
+}
+
+function renderCurrentFrame() {
+  const fp = state.framePreview;
+  if (!fp.active || !fp.sourceImage) return;
+
+  const canvas = elements.previewContainer.querySelector('.frame-preview-canvas');
+  if (!canvas) return;
+
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+
+  const { columns, frameWidth, frameHeight, currentFrameIndex } = fp;
+  const col = currentFrameIndex % columns;
+  const row = Math.floor(currentFrameIndex / columns);
+  const offset = getFrameOffset(fp.sourceImagePath, currentFrameIndex);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const cropLeft = Math.max(0, -offset.dx);
+  const cropTop = Math.max(0, -offset.dy);
+  const cropW = frameWidth - Math.abs(offset.dx);
+  const cropH = frameHeight - Math.abs(offset.dy);
+  const destX = Math.max(0, offset.dx);
+  const destY = Math.max(0, offset.dy);
+
+  if (cropW > 0 && cropH > 0) {
+    ctx.drawImage(
+      fp.sourceImage,
+      col * frameWidth + cropLeft,
+      row * frameHeight + cropTop,
+      cropW,
+      cropH,
+      destX,
+      destY,
+      cropW,
+      cropH
+    );
+  }
+}
+
+function navigateFrame(delta) {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  fp.currentFrameIndex = (fp.currentFrameIndex + delta + fp.totalFrames) % fp.totalFrames;
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+function getFrameOffset(imagePath, frameIndex) {
+  const offsets = state.frameOffsets[imagePath];
+  if (!offsets) return { dx: 0, dy: 0 };
+  const offset = offsets[frameIndex];
+  if (!offset) return { dx: 0, dy: 0 };
+  return { dx: offset.dx || 0, dy: offset.dy || 0 };
+}
+
+function setFrameOffset(imagePath, frameIndex, dx, dy) {
+  if (dx === 0 && dy === 0) {
+    if (state.frameOffsets[imagePath]) {
+      delete state.frameOffsets[imagePath][frameIndex];
+      if (Object.keys(state.frameOffsets[imagePath]).length === 0) {
+        delete state.frameOffsets[imagePath];
+      }
+    }
+    return;
+  }
+  if (!state.frameOffsets[imagePath]) {
+    state.frameOffsets[imagePath] = {};
+  }
+  state.frameOffsets[imagePath][frameIndex] = { dx, dy };
+}
+
+function nudgeFrameOffset(dx, dy) {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  const current = getFrameOffset(fp.sourceImagePath, fp.currentFrameIndex);
+  setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, current.dx + dx, current.dy + dy);
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+function resetCurrentFrameOffset() {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, 0, 0);
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+function resetAllFrameOffsetsForCurrentImage() {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  delete state.frameOffsets[fp.sourceImagePath];
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+}
+
+function countModifiedFrames(imagePath) {
+  const offsets = state.frameOffsets[imagePath];
+  if (!offsets) return 0;
+  return Object.keys(offsets).length;
+}
+
+function updateFramePreviewInfo() {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+
+  const offset = getFrameOffset(fp.sourceImagePath, fp.currentFrameIndex);
+  const hasOffset = offset.dx !== 0 || offset.dy !== 0;
+  const modifiedCount = countModifiedFrames(fp.sourceImagePath);
+  const offsetClass = hasOffset ? 'frame-offset-modified' : '';
+
+  elements.previewInfo.innerHTML = `
+    Frame: <span>${fp.currentFrameIndex + 1} / ${fp.totalFrames}</span> |
+    Offset: <span class="${offsetClass}">(${offset.dx}, ${offset.dy})</span> |
+    Frame size: <span>${fp.frameWidth} x ${fp.frameHeight}</span> |
+    Modified: <span>${modifiedCount}</span>
+    <div class="frame-preview-hint">
+      Click left/right half, ‹ ›, or A/D to navigate · Arrow keys to nudge (Shift = 10px)
+      <button id="resetFrameOffsetBtn" class="frame-reset-btn" ${hasOffset ? '' : 'disabled'}>Reset Frame</button>
+      <button id="resetAllOffsetsBtn" class="frame-reset-btn" ${modifiedCount > 0 ? '' : 'disabled'}>Reset All</button>
+    </div>
+  `;
+
+  const resetFrameBtn = document.getElementById('resetFrameOffsetBtn');
+  if (resetFrameBtn) resetFrameBtn.addEventListener('click', resetCurrentFrameOffset);
+  const resetAllBtn = document.getElementById('resetAllOffsetsBtn');
+  if (resetAllBtn) resetAllBtn.addEventListener('click', resetAllFrameOffsetsForCurrentImage);
+}
+
+function handlePreviewContainerClick(e) {
+  if (!state.framePreview.active) return;
+  if (e.target.closest('.frame-nav-arrow')) return;
+
+  const rect = elements.previewContainer.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  if (clickX < rect.width / 2) {
+    navigateFrame(-1);
+  } else {
+    navigateFrame(1);
+  }
 }
 
 // =============================================
@@ -1165,6 +1461,35 @@ function handleKeyDown(e) {
   if (e.code === 'Space' && state.mode === 'tilemap') {
     e.preventDefault();
     handleTilemapPanToggle();
+    return;
+  }
+
+  // Frame preview keyboard controls
+  if (state.mode === 'slice' && state.framePreview.active) {
+    // A / D: navigate frames
+    if (e.code === 'KeyA') {
+      e.preventDefault();
+      navigateFrame(-1);
+      return;
+    }
+    if (e.code === 'KeyD') {
+      e.preventDefault();
+      navigateFrame(1);
+      return;
+    }
+
+    // Arrow keys: nudge frame offset
+    const step = e.shiftKey ? 10 : 1;
+    let dx = 0;
+    let dy = 0;
+    if (e.code === 'ArrowLeft') dx = -step;
+    else if (e.code === 'ArrowRight') dx = step;
+    else if (e.code === 'ArrowUp') dy = -step;
+    else if (e.code === 'ArrowDown') dy = step;
+    else return;
+
+    e.preventDefault();
+    nudgeFrameOffset(dx, dy);
   }
 }
 

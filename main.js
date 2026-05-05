@@ -79,6 +79,21 @@ ipcMain.handle('get-image-info', async (event, imagePath) => {
   }
 });
 
+// Get full-resolution image data URL (for frame preview canvas)
+ipcMain.handle('get-image-data-url', async (event, imagePath) => {
+  try {
+    const metadata = await sharp(imagePath).metadata();
+    const buffer = await sharp(imagePath).png().toBuffer();
+    return {
+      dataUrl: `data:image/png;base64,${buffer.toString('base64')}`,
+      width: metadata.width,
+      height: metadata.height
+    };
+  } catch (error) {
+    throw new Error(`Failed to load image: ${error.message}`);
+  }
+});
+
 // Slice sprite sheet
 ipcMain.handle('slice-sprite', async (event, options) => {
   const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0 } = options;
@@ -135,7 +150,7 @@ ipcMain.handle('slice-sprite', async (event, options) => {
 
 // Batch slice multiple sprites
 ipcMain.handle('batch-slice', async (event, options) => {
-  const { imagePaths, columns, rows, outputFolder, baseName, useSequentialNumbering } = options;
+  const { imagePaths, columns, rows, outputFolder, baseName, useSequentialNumbering, frameOffsetsByPath = {} } = options;
 
   const allResults = [];
   let currentNumber = 0;
@@ -150,7 +165,8 @@ ipcMain.handle('batch-slice', async (event, options) => {
       rows,
       outputFolder,
       baseName: useSequentialNumbering ? baseName : name,
-      startNumber: useSequentialNumbering ? currentNumber : 0
+      startNumber: useSequentialNumbering ? currentNumber : 0,
+      frameOffsets: frameOffsetsByPath[imagePath] || {}
     });
 
     if (result.success) {
@@ -174,7 +190,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
 });
 
 async function sliceSingleSprite(options) {
-  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0 } = options;
+  const { imagePath, columns, rows, outputFolder, baseName, startNumber = 0, frameOffsets = {} } = options;
 
   try {
     const image = sharp(imagePath);
@@ -188,17 +204,58 @@ async function sliceSingleSprite(options) {
 
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
+        const frameIndex = row * columns + col;
+        const offset = frameOffsets[frameIndex] || frameOffsets[String(frameIndex)];
+        const dx = (offset && offset.dx) || 0;
+        const dy = (offset && offset.dy) || 0;
+
         const outputName = `${baseName}_${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
 
-        await sharp(imagePath)
-          .extract({
-            left: col * frameWidth,
-            top: row * frameHeight,
-            width: frameWidth,
-            height: frameHeight
-          })
-          .toFile(outputPath);
+        if (dx === 0 && dy === 0) {
+          await sharp(imagePath)
+            .extract({
+              left: col * frameWidth,
+              top: row * frameHeight,
+              width: frameWidth,
+              height: frameHeight
+            })
+            .png()
+            .toFile(outputPath);
+        } else {
+          const cropLeft = Math.max(-dx, 0);
+          const cropTop = Math.max(-dy, 0);
+          const cropW = frameWidth - Math.abs(dx);
+          const cropH = frameHeight - Math.abs(dy);
+
+          const blank = sharp({
+            create: {
+              width: frameWidth,
+              height: frameHeight,
+              channels: 4,
+              background: { r: 0, g: 0, b: 0, alpha: 0 }
+            }
+          });
+
+          if (cropW > 0 && cropH > 0) {
+            const piece = await sharp(imagePath)
+              .extract({
+                left: col * frameWidth + cropLeft,
+                top: row * frameHeight + cropTop,
+                width: cropW,
+                height: cropH
+              })
+              .png()
+              .toBuffer();
+
+            await blank
+              .composite([{ input: piece, left: Math.max(dx, 0), top: Math.max(dy, 0) }])
+              .png()
+              .toFile(outputPath);
+          } else {
+            await blank.png().toFile(outputPath);
+          }
+        }
 
         results.push({
           frameNumber,

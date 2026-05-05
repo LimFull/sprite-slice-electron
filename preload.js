@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectImages: () => ipcRenderer.invoke('select-images'),
   selectOutputFolder: () => ipcRenderer.invoke('select-output-folder'),
   getImageInfo: (imagePath) => ipcRenderer.invoke('get-image-info', imagePath),
+  getImageDataUrl: (imagePath) => ipcRenderer.invoke('get-image-data-url', imagePath),
   sliceSprite: (options) => ipcRenderer.invoke('slice-sprite', options),
   batchSlice: (options) => ipcRenderer.invoke('batch-slice', options),
   generatePreview: (options) => ipcRenderer.invoke('generate-preview', options),
