@@ -1311,6 +1311,90 @@ function countModifiedFrames(imagePath) {
   return Object.keys(offsets).length;
 }
 
+// Render a single frame's base content (no per-frame offset) to an offscreen
+// canvas and return its ImageData. Used by centering to inspect alpha.
+function renderFrameBaseImageData(frameIndex) {
+  const fp = state.framePreview;
+  if (!fp.active || !fp.sourceImage) return null;
+  const { columns, frameWidth, frameHeight, imageX = 0, imageY = 0, sourceImage } = fp;
+  if (frameWidth <= 0 || frameHeight <= 0) return null;
+
+  const col = frameIndex % columns;
+  const row = Math.floor(frameIndex / columns);
+  const frameCanvasX = col * frameWidth;
+  const frameCanvasY = row * frameHeight;
+  const imgRelX = frameCanvasX - imageX;
+  const imgRelY = frameCanvasY - imageY;
+
+  const imgW = sourceImage.naturalWidth;
+  const imgH = sourceImage.naturalHeight;
+  const srcL = Math.max(0, imgRelX);
+  const srcT = Math.max(0, imgRelY);
+  const srcR = Math.min(imgW, imgRelX + frameWidth);
+  const srcB = Math.min(imgH, imgRelY + frameHeight);
+  const srcW = srcR - srcL;
+  const srcH = srcB - srcT;
+
+  const off = document.createElement('canvas');
+  off.width = frameWidth;
+  off.height = frameHeight;
+  const ctx = off.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  if (srcW > 0 && srcH > 0) {
+    const destX = srcL - imgRelX;
+    const destY = srcT - imgRelY;
+    ctx.drawImage(sourceImage, srcL, srcT, srcW, srcH, destX, destY, srcW, srcH);
+  }
+  return ctx.getImageData(0, 0, frameWidth, frameHeight);
+}
+
+function findOpaqueBounds(imageData) {
+  const { width, height, data } = imageData;
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const rowBase = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      if (data[rowBase + x * 4 + 3] > 0) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  return { minX, minY, maxX, maxY };
+}
+
+function centerAllFrames() {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+
+  const { totalFrames, frameWidth, frameHeight, sourceImagePath } = fp;
+  let centered = 0;
+  for (let i = 0; i < totalFrames; i++) {
+    const data = renderFrameBaseImageData(i);
+    if (!data) continue;
+    const bounds = findOpaqueBounds(data);
+    if (!bounds) {
+      setFrameOffset(sourceImagePath, i, 0, 0);
+      continue;
+    }
+    // Center the opaque bounding box on the frame center. Inclusive bounds
+    // span [min, max], so the half-open extent is max + 1.
+    const bboxCenterX = (bounds.minX + bounds.maxX + 1) / 2;
+    const bboxCenterY = (bounds.minY + bounds.maxY + 1) / 2;
+    const dx = Math.round(frameWidth / 2 - bboxCenterX);
+    const dy = Math.round(frameHeight / 2 - bboxCenterY);
+    setFrameOffset(sourceImagePath, i, dx, dy);
+    centered++;
+  }
+
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+  return centered;
+}
+
 function updateFramePreviewInfo() {
   const fp = state.framePreview;
   if (!fp.active) return;
@@ -1327,11 +1411,14 @@ function updateFramePreviewInfo() {
     Modified: <span>${modifiedCount}</span>
     <div class="frame-preview-hint">
       Click left/right half, ‹ ›, or A/D to navigate · Arrow keys to nudge (Shift = 10px)
+      <button id="centerAllFramesBtn" class="frame-reset-btn">Center All</button>
       <button id="resetFrameOffsetBtn" class="frame-reset-btn" ${hasOffset ? '' : 'disabled'}>Reset Frame</button>
       <button id="resetAllOffsetsBtn" class="frame-reset-btn" ${modifiedCount > 0 ? '' : 'disabled'}>Reset All</button>
     </div>
   `;
 
+  const centerAllBtn = document.getElementById('centerAllFramesBtn');
+  if (centerAllBtn) centerAllBtn.addEventListener('click', centerAllFrames);
   const resetFrameBtn = document.getElementById('resetFrameOffsetBtn');
   if (resetFrameBtn) resetFrameBtn.addEventListener('click', resetCurrentFrameOffset);
   const resetAllBtn = document.getElementById('resetAllOffsetsBtn');
