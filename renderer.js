@@ -52,8 +52,10 @@ const state = {
     sourceImage: null,
     sourceImagePath: null
   },
-  // Per-image frame offsets: { [imagePath]: { [frameIndex]: { dx, dy } } }
+  // Per-image frame offsets: { [imagePath]: { [frameIndex]: { dx, dy, scale } } }
   frameOffsets: {},
+  // Per-image frame display order: { [imagePath]: number[] of original frame indices }
+  frameOrder: {},
   // Image padding (signed): positive extends canvas, negative crops it
   padding: { top: 0, right: 0, bottom: 0, left: 0 },
   // Image position offset on the padded canvas (set via arrow keys in Preview Grid)
@@ -94,6 +96,7 @@ const elements = {
   sliceBtn: document.getElementById('sliceBtn'),
   previewContainer: document.getElementById('previewContainer'),
   previewInfo: document.getElementById('previewInfo'),
+  frameStrip: document.getElementById('frameStrip'),
   progressModal: document.getElementById('progressModal'),
   progressFill: document.getElementById('progressFill'),
   progressText: document.getElementById('progressText'),
@@ -398,6 +401,10 @@ function invalidateFrameOffsets() {
   if (Object.keys(state.frameOffsets).length > 0) {
     state.frameOffsets = {};
   }
+  // Frame count changed → original indices no longer line up, drop the order too.
+  if (Object.keys(state.frameOrder).length > 0) {
+    state.frameOrder = {};
+  }
   if (state.framePreview.active) {
     // Re-init frame preview so columns/rows changes are picked up.
     handleFramePreview();
@@ -465,6 +472,8 @@ function refreshFramePreviewDims() {
   }
   renderCurrentFrame();
   updateFramePreviewInfo();
+  // Padding changed frame boundaries (count unchanged) → thumbnails need redraw.
+  buildFrameStrip();
 }
 
 async function ensureImageCache(imagePath) {
@@ -710,6 +719,7 @@ async function handleSlice() {
       baseName: baseName || null,
       useSequentialNumbering,
       frameOffsetsByPath: state.frameOffsets,
+      frameOrderByPath: state.frameOrder,
       padding: state.padding,
       imageOffset: state.imageOffset
     });
@@ -1163,6 +1173,7 @@ function showFramePreview() {
 
   renderCurrentFrame();
   updateFramePreviewInfo();
+  buildFrameStrip();
 }
 
 function exitFramePreview() {
@@ -1170,6 +1181,10 @@ function exitFramePreview() {
   state.framePreview.active = false;
   state.framePreview.sourceImage = null;
   elements.previewContainer.classList.remove('frame-mode');
+  if (elements.frameStrip) {
+    elements.frameStrip.classList.add('hidden');
+    elements.frameStrip.innerHTML = '';
+  }
 }
 
 function updateFramePreviewSize() {
@@ -1190,22 +1205,30 @@ function updateFramePreviewSize() {
 
 function renderCurrentFrame() {
   const fp = state.framePreview;
-  if (!fp.active || !fp.sourceImage) return;
-
+  if (!fp.active) return;
   const canvas = elements.previewContainer.querySelector('.frame-preview-canvas');
   if (!canvas) return;
+  drawFrameToCanvas(canvas, fp.currentFrameIndex);
+}
+
+// Draw a single frame (by its original grid index) onto the given canvas. The
+// canvas backing store must be frameWidth x frameHeight; CSS handles display
+// scaling. Used by both the main preview and the filmstrip thumbnails.
+function drawFrameToCanvas(canvas, frameIndex) {
+  const fp = state.framePreview;
+  if (!fp.active || !fp.sourceImage) return;
 
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
 
-  const { columns, frameWidth, frameHeight, currentFrameIndex, imageX = 0, imageY = 0 } = fp;
+  const { columns, frameWidth, frameHeight, imageX = 0, imageY = 0 } = fp;
   if (frameWidth <= 0 || frameHeight <= 0) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     return;
   }
-  const col = currentFrameIndex % columns;
-  const row = Math.floor(currentFrameIndex / columns);
-  const offset = getFrameOffset(fp.sourceImagePath, currentFrameIndex);
+  const col = frameIndex % columns;
+  const row = Math.floor(frameIndex / columns);
+  const offset = getFrameOffset(fp.sourceImagePath, frameIndex);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -1235,37 +1258,226 @@ function renderCurrentFrame() {
   const placeR = Math.min(frameWidth, finalDestX + srcW);
   const placeB = Math.min(frameHeight, finalDestY + srcH);
 
+  // Assemble the frame content clipped to the frame bounds (1:1), then blit it
+  // to the visible canvas with the per-frame scale applied about the frame
+  // center. Clipping before scaling mirrors the export in main.js exactly.
+  const off = document.createElement('canvas');
+  off.width = frameWidth;
+  off.height = frameHeight;
+  const offCtx = off.getContext('2d');
+  offCtx.imageSmoothingEnabled = false;
+
   if (srcW > 0 && srcH > 0 && placeR > placeL && placeB > placeT) {
     const finalSrcL = srcL + (placeL - finalDestX);
     const finalSrcT = srcT + (placeT - finalDestY);
     const finalSrcW = placeR - placeL;
     const finalSrcH = placeB - placeT;
-    ctx.drawImage(
+    offCtx.drawImage(
       fp.sourceImage,
       finalSrcL, finalSrcT, finalSrcW, finalSrcH,
       placeL, placeT, finalSrcW, finalSrcH
     );
+  }
+
+  if (offset.scale !== 1) {
+    const cx = frameWidth / 2;
+    const cy = frameHeight / 2;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, frameWidth, frameHeight);
+    ctx.clip();
+    ctx.translate(cx, cy);
+    ctx.scale(offset.scale, offset.scale);
+    ctx.translate(-cx, -cy);
+    ctx.drawImage(off, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.drawImage(off, 0, 0);
   }
 }
 
 function navigateFrame(delta) {
   const fp = state.framePreview;
   if (!fp.active) return;
-  fp.currentFrameIndex = (fp.currentFrameIndex + delta + fp.totalFrames) % fp.totalFrames;
+  // Step through the display order, not the raw grid order.
+  const order = getFrameOrder(fp.sourceImagePath, fp.totalFrames);
+  const pos = order.indexOf(fp.currentFrameIndex);
+  const safePos = pos < 0 ? 0 : pos;
+  const nextPos = (safePos + delta + order.length) % order.length;
+  fp.currentFrameIndex = order[nextPos];
   renderCurrentFrame();
+  updateFramePreviewInfo();
+  updateFrameStripActive();
+}
+
+// Jump the preview directly to a given original frame index (filmstrip click).
+function goToFrame(frameIndex) {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  fp.currentFrameIndex = frameIndex;
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+  updateFrameStripActive();
+}
+
+// ---- Frame display order -------------------------------------------------
+
+function getFrameOrder(imagePath, totalFrames) {
+  const stored = state.frameOrder[imagePath];
+  if (stored && stored.length === totalFrames) return stored.slice();
+  return Array.from({ length: totalFrames }, (_, i) => i);
+}
+
+// Return the persisted order array, creating an identity order if absent.
+function ensureFrameOrder(imagePath, totalFrames) {
+  const stored = state.frameOrder[imagePath];
+  if (!stored || stored.length !== totalFrames) {
+    state.frameOrder[imagePath] = Array.from({ length: totalFrames }, (_, i) => i);
+  }
+  return state.frameOrder[imagePath];
+}
+
+function reorderFrames(fromPos, toPos) {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  const order = ensureFrameOrder(fp.sourceImagePath, fp.totalFrames).slice();
+  if (fromPos < 0 || fromPos >= order.length || toPos < 0 || toPos >= order.length) return;
+  const [moved] = order.splice(fromPos, 1);
+  order.splice(toPos, 0, moved);
+  state.frameOrder[fp.sourceImagePath] = order;
+  buildFrameStrip();
   updateFramePreviewInfo();
 }
 
-function getFrameOffset(imagePath, frameIndex) {
-  const offsets = state.frameOffsets[imagePath];
-  if (!offsets) return { dx: 0, dy: 0 };
-  const offset = offsets[frameIndex];
-  if (!offset) return { dx: 0, dy: 0 };
-  return { dx: offset.dx || 0, dy: offset.dy || 0 };
+// ---- Filmstrip -----------------------------------------------------------
+
+let stripDragFromPos = null;
+
+function buildFrameStrip() {
+  const fp = state.framePreview;
+  const strip = elements.frameStrip;
+  if (!strip) return;
+
+  if (!fp.active || fp.frameWidth <= 0 || fp.frameHeight <= 0) {
+    strip.classList.add('hidden');
+    strip.innerHTML = '';
+    return;
+  }
+
+  strip.classList.remove('hidden');
+  strip.innerHTML = '';
+
+  const order = ensureFrameOrder(fp.sourceImagePath, fp.totalFrames);
+  order.forEach((frameIndex, pos) => {
+    const item = document.createElement('div');
+    item.className = 'frame-strip-item';
+    item.draggable = true;
+    item.dataset.frameIndex = String(frameIndex);
+    item.dataset.pos = String(pos);
+    if (frameIndex === fp.currentFrameIndex) item.classList.add('active');
+
+    const thumb = document.createElement('canvas');
+    thumb.className = 'frame-strip-canvas';
+    thumb.width = Math.max(1, fp.frameWidth);
+    thumb.height = Math.max(1, fp.frameHeight);
+    drawFrameToCanvas(thumb, frameIndex);
+    item.appendChild(thumb);
+
+    const label = document.createElement('span');
+    label.className = 'frame-strip-label';
+    label.textContent = String(pos + 1);
+    item.appendChild(label);
+
+    item.addEventListener('click', () => goToFrame(frameIndex));
+    item.addEventListener('dragstart', onStripDragStart);
+    item.addEventListener('dragover', onStripDragOver);
+    item.addEventListener('dragenter', onStripDragEnter);
+    item.addEventListener('dragleave', onStripDragLeave);
+    item.addEventListener('drop', onStripDrop);
+    item.addEventListener('dragend', onStripDragEnd);
+
+    strip.appendChild(item);
+  });
 }
 
-function setFrameOffset(imagePath, frameIndex, dx, dy) {
-  if (dx === 0 && dy === 0) {
+// Refresh just the active highlight + scroll it into view (cheap; no redraw).
+function updateFrameStripActive() {
+  const strip = elements.frameStrip;
+  if (!strip) return;
+  const items = strip.querySelectorAll('.frame-strip-item');
+  items.forEach((item) => {
+    item.classList.toggle('active', Number(item.dataset.frameIndex) === state.framePreview.currentFrameIndex);
+  });
+  const active = strip.querySelector('.frame-strip-item.active');
+  if (active) active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
+// Re-render a single thumbnail (after its offset/scale changed).
+function updateFrameStripThumb(frameIndex) {
+  const strip = elements.frameStrip;
+  if (!strip) return;
+  const item = strip.querySelector(`.frame-strip-item[data-frame-index="${frameIndex}"]`);
+  if (!item) return;
+  const thumb = item.querySelector('.frame-strip-canvas');
+  if (thumb) drawFrameToCanvas(thumb, frameIndex);
+}
+
+function onStripDragStart(e) {
+  stripDragFromPos = Number(e.currentTarget.dataset.pos);
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  // Firefox requires data to be set for the drag to start.
+  e.dataTransfer.setData('text/plain', String(stripDragFromPos));
+}
+
+function onStripDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+
+function onStripDragEnter(e) {
+  e.preventDefault();
+  if (!e.currentTarget.classList.contains('dragging')) {
+    e.currentTarget.classList.add('drag-over');
+  }
+}
+
+function onStripDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+
+function onStripDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const toPos = Number(e.currentTarget.dataset.pos);
+  if (stripDragFromPos === null || stripDragFromPos === toPos) return;
+  reorderFrames(stripDragFromPos, toPos);
+}
+
+function onStripDragEnd() {
+  const strip = elements.frameStrip;
+  if (strip) {
+    strip.querySelectorAll('.drag-over').forEach((el) => el.classList.remove('drag-over'));
+    strip.querySelectorAll('.dragging').forEach((el) => el.classList.remove('dragging'));
+  }
+  stripDragFromPos = null;
+}
+
+// Per-frame scale bounds and step (j/k keys nudge by SCALE_STEP about frame center).
+const SCALE_MIN = 0.1;
+const SCALE_MAX = 5;
+const SCALE_STEP = 0.02;
+
+function getFrameOffset(imagePath, frameIndex) {
+  const offsets = state.frameOffsets[imagePath];
+  if (!offsets) return { dx: 0, dy: 0, scale: 1 };
+  const offset = offsets[frameIndex];
+  if (!offset) return { dx: 0, dy: 0, scale: 1 };
+  return { dx: offset.dx || 0, dy: offset.dy || 0, scale: offset.scale || 1 };
+}
+
+function setFrameOffset(imagePath, frameIndex, dx, dy, scale = 1) {
+  if (dx === 0 && dy === 0 && scale === 1) {
     if (state.frameOffsets[imagePath]) {
       delete state.frameOffsets[imagePath][frameIndex];
       if (Object.keys(state.frameOffsets[imagePath]).length === 0) {
@@ -1277,16 +1489,31 @@ function setFrameOffset(imagePath, frameIndex, dx, dy) {
   if (!state.frameOffsets[imagePath]) {
     state.frameOffsets[imagePath] = {};
   }
-  state.frameOffsets[imagePath][frameIndex] = { dx, dy };
+  state.frameOffsets[imagePath][frameIndex] = { dx, dy, scale };
 }
 
 function nudgeFrameOffset(dx, dy) {
   const fp = state.framePreview;
   if (!fp.active) return;
   const current = getFrameOffset(fp.sourceImagePath, fp.currentFrameIndex);
-  setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, current.dx + dx, current.dy + dy);
+  setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, current.dx + dx, current.dy + dy, current.scale);
   renderCurrentFrame();
   updateFramePreviewInfo();
+  updateFrameStripThumb(fp.currentFrameIndex);
+}
+
+function nudgeFrameScale(delta) {
+  const fp = state.framePreview;
+  if (!fp.active) return;
+  const current = getFrameOffset(fp.sourceImagePath, fp.currentFrameIndex);
+  let scale = current.scale + delta;
+  scale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, scale));
+  // Round to avoid floating-point drift accumulating across keypresses.
+  scale = Math.round(scale * 1000) / 1000;
+  setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, current.dx, current.dy, scale);
+  renderCurrentFrame();
+  updateFramePreviewInfo();
+  updateFrameStripThumb(fp.currentFrameIndex);
 }
 
 function resetCurrentFrameOffset() {
@@ -1295,6 +1522,7 @@ function resetCurrentFrameOffset() {
   setFrameOffset(fp.sourceImagePath, fp.currentFrameIndex, 0, 0);
   renderCurrentFrame();
   updateFramePreviewInfo();
+  updateFrameStripThumb(fp.currentFrameIndex);
 }
 
 function resetAllFrameOffsetsForCurrentImage() {
@@ -1303,6 +1531,7 @@ function resetAllFrameOffsetsForCurrentImage() {
   delete state.frameOffsets[fp.sourceImagePath];
   renderCurrentFrame();
   updateFramePreviewInfo();
+  buildFrameStrip();
 }
 
 function countModifiedFrames(imagePath) {
@@ -1366,33 +1595,77 @@ function findOpaqueBounds(imageData) {
   return { minX, minY, maxX, maxY };
 }
 
-function centerAllFrames() {
+// Alignment modes per axis: 'start' (left/top), 'center', 'end' (right/bottom).
+// For 'start'/'end', frames align to the most extreme bbox edge in the
+// center-aligned state — not the frame edge — so a Bottom-aligned sprite
+// sheet matches the lowest-reaching frame's feet, not the canvas bottom.
+function centerOffsetForAxis(min, max, frameSize) {
+  return Math.round(frameSize / 2 - (min + max + 1) / 2);
+}
+
+function alignAllFrames(horizontal, vertical) {
   const fp = state.framePreview;
   if (!fp.active) return;
 
   const { totalFrames, frameWidth, frameHeight, sourceImagePath } = fp;
-  let centered = 0;
+
+  const frameBounds = [];
   for (let i = 0; i < totalFrames; i++) {
     const data = renderFrameBaseImageData(i);
-    if (!data) continue;
-    const bounds = findOpaqueBounds(data);
-    if (!bounds) {
-      setFrameOffset(sourceImagePath, i, 0, 0);
+    frameBounds.push(data ? findOpaqueBounds(data) : null);
+  }
+
+  // Reference edge for non-center modes: most extreme displayed bbox edge
+  // when every frame is center-aligned on that axis.
+  let refX = null;
+  let refY = null;
+  for (const b of frameBounds) {
+    if (!b) continue;
+    if (horizontal !== 'center') {
+      const dx = centerOffsetForAxis(b.minX, b.maxX, frameWidth);
+      const edge = horizontal === 'start' ? b.minX + dx : b.maxX + 1 + dx;
+      if (refX === null) refX = edge;
+      else refX = horizontal === 'start' ? Math.min(refX, edge) : Math.max(refX, edge);
+    }
+    if (vertical !== 'center') {
+      const dy = centerOffsetForAxis(b.minY, b.maxY, frameHeight);
+      const edge = vertical === 'start' ? b.minY + dy : b.maxY + 1 + dy;
+      if (refY === null) refY = edge;
+      else refY = vertical === 'start' ? Math.min(refY, edge) : Math.max(refY, edge);
+    }
+  }
+
+  let aligned = 0;
+  for (let i = 0; i < totalFrames; i++) {
+    const b = frameBounds[i];
+    // Preserve any per-frame scale; alignment only repositions content.
+    const scale = getFrameOffset(sourceImagePath, i).scale;
+    if (!b) {
+      setFrameOffset(sourceImagePath, i, 0, 0, scale);
       continue;
     }
-    // Center the opaque bounding box on the frame center. Inclusive bounds
-    // span [min, max], so the half-open extent is max + 1.
-    const bboxCenterX = (bounds.minX + bounds.maxX + 1) / 2;
-    const bboxCenterY = (bounds.minY + bounds.maxY + 1) / 2;
-    const dx = Math.round(frameWidth / 2 - bboxCenterX);
-    const dy = Math.round(frameHeight / 2 - bboxCenterY);
-    setFrameOffset(sourceImagePath, i, dx, dy);
-    centered++;
+    let dx;
+    if (horizontal === 'center') dx = centerOffsetForAxis(b.minX, b.maxX, frameWidth);
+    else if (horizontal === 'start') dx = refX - b.minX;
+    else dx = refX - (b.maxX + 1);
+
+    let dy;
+    if (vertical === 'center') dy = centerOffsetForAxis(b.minY, b.maxY, frameHeight);
+    else if (vertical === 'start') dy = refY - b.minY;
+    else dy = refY - (b.maxY + 1);
+
+    setFrameOffset(sourceImagePath, i, dx, dy, scale);
+    aligned++;
   }
 
   renderCurrentFrame();
   updateFramePreviewInfo();
-  return centered;
+  buildFrameStrip();
+  return aligned;
+}
+
+function centerAllFrames() {
+  return alignAllFrames('center', 'center');
 }
 
 function updateFramePreviewInfo() {
@@ -1400,18 +1673,29 @@ function updateFramePreviewInfo() {
   if (!fp.active) return;
 
   const offset = getFrameOffset(fp.sourceImagePath, fp.currentFrameIndex);
-  const hasOffset = offset.dx !== 0 || offset.dy !== 0;
+  const hasOffset = offset.dx !== 0 || offset.dy !== 0 || offset.scale !== 1;
   const modifiedCount = countModifiedFrames(fp.sourceImagePath);
   const offsetClass = hasOffset ? 'frame-offset-modified' : '';
+  const scalePct = Math.round(offset.scale * 100);
+
+  // The "Frame N / total" label tracks display position (filmstrip order).
+  const order = getFrameOrder(fp.sourceImagePath, fp.totalFrames);
+  const displayPos = order.indexOf(fp.currentFrameIndex);
+  const posLabel = (displayPos < 0 ? fp.currentFrameIndex : displayPos) + 1;
 
   elements.previewInfo.innerHTML = `
-    Frame: <span>${fp.currentFrameIndex + 1} / ${fp.totalFrames}</span> |
+    Frame: <span>${posLabel} / ${fp.totalFrames}</span> |
     Offset: <span class="${offsetClass}">(${offset.dx}, ${offset.dy})</span> |
+    Scale: <span class="${offset.scale !== 1 ? 'frame-offset-modified' : ''}">${scalePct}%</span> |
     Frame size: <span>${fp.frameWidth} x ${fp.frameHeight}</span> |
     Modified: <span>${modifiedCount}</span>
     <div class="frame-preview-hint">
-      Click left/right half, ‹ ›, or A/D to navigate · Arrow keys to nudge (Shift = 10px)
+      Click left/right half, ‹ ›, or A/D to navigate · Arrow keys to nudge (Shift = 10px) · J/K to resize · drag thumbnails below to reorder
       <button id="centerAllFramesBtn" class="frame-reset-btn">Center All</button>
+      <button id="alignTopBtn" class="frame-reset-btn" title="Align top (horizontally centered)">Top</button>
+      <button id="alignBottomBtn" class="frame-reset-btn" title="Align bottom (horizontally centered)">Bottom</button>
+      <button id="alignLeftBtn" class="frame-reset-btn" title="Align left (vertically centered)">Left</button>
+      <button id="alignRightBtn" class="frame-reset-btn" title="Align right (vertically centered)">Right</button>
       <button id="resetFrameOffsetBtn" class="frame-reset-btn" ${hasOffset ? '' : 'disabled'}>Reset Frame</button>
       <button id="resetAllOffsetsBtn" class="frame-reset-btn" ${modifiedCount > 0 ? '' : 'disabled'}>Reset All</button>
     </div>
@@ -1419,6 +1703,14 @@ function updateFramePreviewInfo() {
 
   const centerAllBtn = document.getElementById('centerAllFramesBtn');
   if (centerAllBtn) centerAllBtn.addEventListener('click', centerAllFrames);
+  const alignTopBtn = document.getElementById('alignTopBtn');
+  if (alignTopBtn) alignTopBtn.addEventListener('click', () => alignAllFrames('center', 'start'));
+  const alignBottomBtn = document.getElementById('alignBottomBtn');
+  if (alignBottomBtn) alignBottomBtn.addEventListener('click', () => alignAllFrames('center', 'end'));
+  const alignLeftBtn = document.getElementById('alignLeftBtn');
+  if (alignLeftBtn) alignLeftBtn.addEventListener('click', () => alignAllFrames('start', 'center'));
+  const alignRightBtn = document.getElementById('alignRightBtn');
+  if (alignRightBtn) alignRightBtn.addEventListener('click', () => alignAllFrames('end', 'center'));
   const resetFrameBtn = document.getElementById('resetFrameOffsetBtn');
   if (resetFrameBtn) resetFrameBtn.addEventListener('click', resetCurrentFrameOffset);
   const resetAllBtn = document.getElementById('resetAllOffsetsBtn');
@@ -2046,6 +2338,14 @@ function handleKeyDown(e) {
     if (e.code === 'KeyD') {
       e.preventDefault();
       navigateFrame(1);
+      return;
+    }
+
+    // J / K: shrink / grow the frame slightly (Shift = larger step)
+    if (e.code === 'KeyJ' || e.code === 'KeyK') {
+      e.preventDefault();
+      const scaleStep = e.shiftKey ? SCALE_STEP * 5 : SCALE_STEP;
+      nudgeFrameScale(e.code === 'KeyJ' ? -scaleStep : scaleStep);
       return;
     }
 

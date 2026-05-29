@@ -158,6 +158,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
     baseName,
     useSequentialNumbering,
     frameOffsetsByPath = {},
+    frameOrderByPath = {},
     padding = { top: 0, right: 0, bottom: 0, left: 0 },
     imageOffset = { x: 0, y: 0 }
   } = options;
@@ -177,6 +178,7 @@ ipcMain.handle('batch-slice', async (event, options) => {
       baseName: useSequentialNumbering ? baseName : name,
       startNumber: useSequentialNumbering ? currentNumber : 0,
       frameOffsets: frameOffsetsByPath[imagePath] || {},
+      frameOrder: frameOrderByPath[imagePath] || null,
       padding,
       imageOffset
     });
@@ -201,10 +203,54 @@ ipcMain.handle('batch-slice', async (event, options) => {
   return allResults;
 });
 
+// Scale an assembled frame's content about its center, keeping the frame
+// dimensions fixed (content shrinks toward / grows past the center, cropped to
+// the frame bounds). Mirrors the renderer's clip + transform preview.
+async function applyFrameScale(frameBuffer, frameWidth, frameHeight, scale) {
+  const scaledW = Math.max(1, Math.round(frameWidth * scale));
+  const scaledH = Math.max(1, Math.round(frameHeight * scale));
+
+  let scaled = await sharp(frameBuffer)
+    .resize(scaledW, scaledH, { kernel: 'nearest' })
+    .png()
+    .toBuffer();
+
+  // Center the scaled content on the original frame, cropping any overflow.
+  let extractLeft = 0, extractTop = 0, extractW = scaledW, extractH = scaledH;
+  let destLeft = Math.round((frameWidth - scaledW) / 2);
+  let destTop = Math.round((frameHeight - scaledH) / 2);
+
+  if (destLeft < 0) {
+    extractLeft = -destLeft;
+    extractW = Math.min(scaledW - extractLeft, frameWidth);
+    destLeft = 0;
+  }
+  if (destTop < 0) {
+    extractTop = -destTop;
+    extractH = Math.min(scaledH - extractTop, frameHeight);
+    destTop = 0;
+  }
+
+  if (extractLeft !== 0 || extractTop !== 0 || extractW !== scaledW || extractH !== scaledH) {
+    scaled = await sharp(scaled)
+      .extract({ left: extractLeft, top: extractTop, width: extractW, height: extractH })
+      .png()
+      .toBuffer();
+  }
+
+  return sharp({
+    create: { width: frameWidth, height: frameHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+  })
+    .composite([{ input: scaled, left: destLeft, top: destTop }])
+    .png()
+    .toBuffer();
+}
+
 async function sliceSingleSprite(options) {
   const {
     imagePath, columns, rows, outputFolder, baseName, startNumber = 0,
     frameOffsets = {},
+    frameOrder = null,
     padding = { top: 0, right: 0, bottom: 0, left: 0 },
     imageOffset = { x: 0, y: 0 }
   } = options;
@@ -234,12 +280,21 @@ async function sliceSingleSprite(options) {
     const results = [];
     let frameNumber = startNumber;
 
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < columns; col++) {
-        const frameIndex = row * columns + col;
+    // Output order follows the (optional) per-image frame order; output content
+    // for each position is the frame at its original grid index.
+    const totalFrames = rows * columns;
+    const order = (Array.isArray(frameOrder) && frameOrder.length === totalFrames)
+      ? frameOrder
+      : Array.from({ length: totalFrames }, (_, i) => i);
+
+    for (let p = 0; p < order.length; p++) {
+        const frameIndex = order[p];
+        const col = frameIndex % columns;
+        const row = Math.floor(frameIndex / columns);
         const offset = frameOffsets[frameIndex] || frameOffsets[String(frameIndex)];
         const dx = (offset && offset.dx) || 0;
         const dy = (offset && offset.dy) || 0;
+        const scale = (offset && offset.scale) || 1;
 
         const outputName = `${baseName}_${String(frameNumber).padStart(3, '0')}.png`;
         const outputPath = path.join(outputFolder, outputName);
@@ -281,6 +336,8 @@ async function sliceSingleSprite(options) {
             create: { width: frameWidth, height: frameHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
           });
 
+          // Assemble the frame at scale 1:1 into a buffer.
+          let frameBuffer;
           if (srcW > 0 && srcH > 0 && placeR > placeL && placeB > placeT) {
             const finalSrcL = srcL + (placeL - finalDestX);
             const finalSrcT = srcT + (placeT - finalDestY);
@@ -292,18 +349,24 @@ async function sliceSingleSprite(options) {
               .png()
               .toBuffer();
 
-            await blank
+            frameBuffer = await blank
               .composite([{ input: piece, left: placeL, top: placeT }])
               .png()
-              .toFile(outputPath);
+              .toBuffer();
           } else {
-            await blank.png().toFile(outputPath);
+            frameBuffer = await blank.png().toBuffer();
           }
+
+          // Apply the per-frame scale about the frame center.
+          if (scale !== 1) {
+            frameBuffer = await applyFrameScale(frameBuffer, frameWidth, frameHeight, scale);
+          }
+
+          await sharp(frameBuffer).png().toFile(outputPath);
         }
 
         results.push({ frameNumber, outputPath, outputName });
         frameNumber++;
-      }
     }
 
     return {
